@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({
     /** Id shared by the sidebar entry and the main panel it opens. */
     const PANEL_ID = 'review-desk'
     /** Build tag, surfaced in the page attribute and the console. */
-    const BUILD = '2026-11-13.14-engine.4'
+    const BUILD = '2026-11-13.15-engine.5'
     /** Engine branch: replacements are confirmed in a local dialog, never applied silently. */
     const CONFIRM_REPLACE = true
     /** Locale namespace owned by this plugin. */
@@ -114,6 +114,9 @@ window.__ModuleLoader__.load({
       importUnsupported: '不支持的文件类型，请选择 .docx、.pdf、.md 或 .txt。',
       importNoDeflate: '当前运行环境不支持文档解压，无法解析 .docx 与 .pdf。',
       importFailed: '文件解析失败，请确认文件未损坏。',
+      importEncrypted: '读不出来：这份文稿可能是加了密码的 Word 文档，或旧版 .doc 改了扩展名。请在 Word 里取消密码、另存为 .docx 后再导入。',
+      importZipVariant: '这个 .docx 的压缩结构不标准（zip64 或非常规压缩）。用 Word 打开后「另存为 → .docx」再试一次。',
+      importStructure: '文件内容不完整：找不到 word/document.xml。可能是转换工具导出的变体，请用 Word 另存为一份新的 .docx。',
       reviewedCount: '已审阅',
       jumpTo: '定位到原文',
       markStale: '原文已改动，找不到这一段。',
@@ -287,6 +290,9 @@ window.__ModuleLoader__.load({
       importUnsupported: 'Unsupported file type. Choose .docx, .pdf, .md, or .txt.',
       importNoDeflate: 'This runtime cannot inflate documents, so .docx and .pdf cannot be read.',
       importFailed: 'The file could not be parsed. Check that it is intact.',
+      importEncrypted: 'Cannot read this file: it may be a password-protected Word document, or a legacy .doc renamed to .docx. Remove the password and save as .docx, then import again.',
+      importZipVariant: 'This .docx uses an unusual archive layout (zip64 or another compression method). Open it in Word and save a fresh copy as .docx.',
+      importStructure: 'The file is incomplete: word/document.xml is missing. It may be a converter variant; re-save it from Word as a new .docx.',
       reviewedCount: 'Reviewed',
       jumpTo: 'Locate in text',
       markStale: 'The passage changed; it cannot be located.',
@@ -579,7 +585,7 @@ window.__ModuleLoader__.load({
         const localOffset = u32(view, cursor + 42)
         const name = latin1(bytes.subarray(cursor + 46, cursor + 46 + nameLength))
         cursor += 46 + nameLength + extraLength + commentLength
-        if (name !== wanted) continue
+        if (name.toLowerCase() !== wanted.toLowerCase()) continue
         if (compressed === 0xffff_ffff) throw new Error('zip64-unsupported')
         if (u32(view, localOffset) !== 0x0403_4b50) throw new Error('zip-invalid')
         const nameAtLocal = u16(view, localOffset + 26)
@@ -1160,9 +1166,21 @@ window.__ModuleLoader__.load({
      * @param {File} file - the picked file.
      * @returns {Promise<{ text: string, title: string }>} Markdown body and any title the file carries.
      */
+    /** Container magic of the two Word formats this importer can meet. */
+    async function magicOf(file) {
+      const head = new Uint8Array(await file.slice(0, 8).arrayBuffer())
+      if (head.length >= 8 && head[0] === 0xd0 && head[1] === 0xcf && head[2] === 0x11 && head[3] === 0xe0) return 'ole'
+      if (head.length >= 2 && head[0] === 0x50 && head[1] === 0x4b) return 'zip'
+      return 'other'
+    }
+
     async function extractDocument(file) {
       const extension = (file.name.split('.').pop() ?? '').toLowerCase()
+      const magic = await magicOf(file)
       if (extension === 'docx' || extension === 'docm') {
+        // A password-protected (or renamed legacy) document is not a ZIP at all.
+        if (magic === 'ole') throw new Error('docx-encrypted')
+        if (magic === 'other') throw new Error('docx-invalid')
         if (file.size > IMPORT_LIMITS.docx) throw new Error('too-large')
         return extractDocx(file)
       }
@@ -1186,11 +1204,15 @@ window.__ModuleLoader__.load({
         case 'legacy-doc': return t('importLegacyDoc')
         case 'unsupported': return t('importUnsupported')
         case 'deflate-unsupported': return t('importNoDeflate')
+        case 'docx-encrypted': return t('importEncrypted')
         case 'zip-invalid':
         case 'zip-missing':
         case 'zip-method':
         case 'zip64-unsupported':
+          return t('importZipVariant')
         case 'docx-invalid':
+        case 'zip-missing':
+          return t('importStructure')
         case 'pdf-invalid':
         case 'doc-empty':
           return t('importFailed')
@@ -5269,6 +5291,8 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
             ? t('importFormatKept')
             : t('imported'))
         } catch (error) {
+          const code = error instanceof Error ? error.message : String(error)
+          try { console.warn('[review-desk] import failed:', code, error) } catch { /* console is optional */ }
           showNotice(importMessage(error, t))
         } finally {
           setImporting(false)
