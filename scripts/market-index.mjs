@@ -36,8 +36,8 @@ const index = {
       name: pkg.name,
       title: { zh: '文稿审核台', en: 'Review desk' },
       description: {
-        zh: '三栏审稿工作台：来源查证、逻辑分析、扩写、关联分析与自由改写，导入 docx/pdf 保留结构，审核包可携带全部过程。',
-        en: 'A three-column review workspace: source checks, logic review, expansion, connection analysis, and rewrites, with structure-preserving docx/pdf import and a portable review package.',
+        zh: '三栏审稿工作台：来源查证、逻辑分析、扩写、关联分析与自由改写；编辑区按块渲染表格与图片，点哪段改哪段；导入 docx/pdf 保留结构，审核包可携带全部过程。',
+        en: 'A three-column review workspace: source checks, logic review, expansion, connection analysis, and rewrites, with block-level editing that keeps tables and images rendered, structure-preserving docx/pdf import, and a portable review package.',
       },
       icon: '../icon.svg',
       author: 'lzyxczw-cyber',
