@@ -1403,26 +1403,25 @@ await test('the edit view renders tables and images instead of source', async ()
   await page.unmount()
 })
 
-await test('clicking a block edits just that block and keeps the rest', async () => {
+await test('editing happens inside the rendered block and saves on blur', async () => {
   const page = mount({ seed: { title: '块编辑', text: '第一段内容。\n\n第二段内容。', runs: [] }, mode: 'edit' })
   await page.render()
   const blocks = queryAll(page.container, '.rd-block')
   assert.equal(blocks.length, 2)
-  click(blocks[0])
-  await flush()
-  const input = page.container.querySelector('.rd-block-input')
-  assert.ok(input, 'inline editor appears')
-  assert.equal(input.value, '第一段内容。', 'it holds exactly that block source')
+  assert.equal(blocks[0].getAttribute('contenteditable'), 'true', 'the block is the editing surface')
+  assert.equal(page.container.querySelector('.rd-block-input'), null, 'no popup editor')
 
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+  const paragraph = blocks[0].querySelector('p')
   await act(async () => {
-    setter.call(input, '改过的第一段。')
-    input.dispatchEvent(new window.Event('input', { bubbles: true }))
+    blocks[0].dispatchEvent(new window.FocusEvent('focusin', { bubbles: true }))
   })
-  const done = queryAll(page.container, '.rd-block-actions .rd-mini').find(node => node.textContent === '完成')
-  click(done)
+  await act(async () => {
+    paragraph.textContent = '改过的第一段。'
+  })
+  await act(async () => {
+    blocks[0].dispatchEvent(new window.FocusEvent('focusout', { bubbles: true }))
+  })
   await flush(4)
-  assert.equal(page.container.querySelector('.rd-block-input'), null, 'editor closes')
   const rendered = queryAll(page.container, '.rd-block').map(node => node.textContent)
   assert.ok(rendered[0].includes('改过的第一段'), rendered.join(' | '))
   assert.ok(rendered[1].includes('第二段内容'), 'the other block is untouched')
@@ -1432,23 +1431,48 @@ await test('clicking a block edits just that block and keeps the rest', async ()
   await page.unmount()
 })
 
-await test('Escape cancels a block edit without touching the document', async () => {
-  const page = mount({ seed: { title: '取消', text: '第一段内容。', runs: [] }, mode: 'edit' })
+await test('formatting typed in a block is written back as Markdown', async () => {
+  const page = mount({ seed: { title: '行内', text: '第一段内容。', runs: [] }, mode: 'edit' })
   await page.render()
-  click(page.container.querySelector('.rd-block'))
-  await flush()
-  const input = page.container.querySelector('.rd-block-input')
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+  const block = page.container.querySelector('.rd-block')
+  const paragraph = block.querySelector('p')
   await act(async () => {
-    setter.call(input, '不该保存的改动')
-    input.dispatchEvent(new window.Event('input', { bubbles: true }))
+    block.dispatchEvent(new window.FocusEvent('focusin', { bubbles: true }))
   })
   await act(async () => {
-    input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    paragraph.innerHTML = '这里<strong>很重要</strong>，还有<em>一点补充</em>。'
   })
-  await flush(3)
-  assert.equal(page.container.querySelector('.rd-block-input'), null, 'editor closes')
-  assert.ok(page.container.querySelector('.rd-block').textContent.includes('第一段内容。'), 'text unchanged')
+  await act(async () => {
+    block.dispatchEvent(new window.FocusEvent('focusout', { bubbles: true }))
+  })
+  await flush(4)
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 520)) })
+  const saved = JSON.parse(window.localStorage.getItem('dsh.review-desk.v1'))
+  assert.equal(saved.text, '这里**很重要**，还有*一点补充*。')
+  await page.unmount()
+})
+
+await test('table cells edit in place and serialize back to a pipe table', async () => {
+  const source = '| 指标 | 数值 |\n| --- | --- |\n| 余额 | 42.6 |'
+  const page = mount({ seed: { title: '表格', text: source, runs: [] }, mode: 'edit' })
+  await page.render()
+  const block = page.container.querySelector('.rd-block')
+  const cells = queryAll(block, 'td')
+  assert.equal(cells.length, 2, 'table body cells rendered')
+  await act(async () => {
+    block.dispatchEvent(new window.FocusEvent('focusin', { bubbles: true }))
+  })
+  await act(async () => {
+    cells[1].textContent = '43.1'
+  })
+  await act(async () => {
+    block.dispatchEvent(new window.FocusEvent('focusout', { bubbles: true }))
+  })
+  await flush(4)
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 520)) })
+  const saved = JSON.parse(window.localStorage.getItem('dsh.review-desk.v1'))
+  assert.ok(saved.text.includes('| 余额 | 43.1 |'), saved.text)
+  assert.ok(saved.text.includes('| 指标 | 数值 |'), 'the header row survives')
   await page.unmount()
 })
 

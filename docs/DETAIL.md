@@ -13,7 +13,7 @@ One manuscript has to pass source checks, logic review, wording, and consistency
 
 ## The edit view
 
-Edit renders the document block by block: tables, images, headings, and lists look final, and clicking a block edits that block's Markdown in place (`Esc` discards, `⌘↩` commits). Switch to Source for a classic whole-document editor, or Preview for read-only.
+Edit renders the document as an editable canvas: tables, images, headings, and lists look final, and you click anywhere and type in place — no popup, no layout jump; it writes back on blur and table cells edit the same way. Switch to Source for a classic whole-document editor, or Preview for read-only.
 
 ## Data
 

@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({
     /** Id shared by the sidebar entry and the main panel it opens. */
     const PANEL_ID = 'review-desk'
     /** Build tag, surfaced in the page attribute and the console. */
-    const BUILD = '2026-11-13.9'
+    const BUILD = '2026-11-13.10'
     /** Locale namespace owned by this plugin. */
     const NS = 'reviewDesk'
     /** Authenticated route the Host half registered. */
@@ -133,7 +133,7 @@ window.__ModuleLoader__.load({
       modeEdit: '编辑',
       modeSource: '源码',
       modePreview: '预览',
-      blockEditHint: '点任意段落即可修改；表格与图片保持原样显示',
+      blockEditHint: '点任意位置直接改字，点别处自动保存；表格单元格同样可直接编辑，Enter 换行，格式用「源码」调整。',
       blockCommit: '完成',
       blockCancel: '取消',
       imageAlt: '图片',
@@ -295,7 +295,7 @@ window.__ModuleLoader__.load({
       modeEdit: 'Edit',
       modeSource: 'Source',
       modePreview: 'Preview',
-      blockEditHint: 'Click any block to edit it; tables and images stay rendered',
+      blockEditHint: 'Click anywhere to edit in place; it saves when you click away. Table cells edit the same way, Enter adds a line, and formatting lives in Source.',
       blockCommit: 'Done',
       blockCancel: 'Cancel',
       imageAlt: 'Image',
@@ -1436,6 +1436,114 @@ window.__ModuleLoader__.load({
         default:
           return h('p', { key }, lineNodes(block.lines, key))
       }
+    }
+
+    /** Markdown for the inline content of one rendered node. */
+    function inlineMarkdown(node) {
+      let out = ''
+      for (const child of node.childNodes) {
+        if (child.nodeType === 3) {
+          out += child.nodeValue ?? ''
+          continue
+        }
+        if (child.nodeType !== 1) continue
+        const tag = child.tagName.toLowerCase()
+        if (tag === 'br') out += '\n'
+        else if (tag === 'strong' || tag === 'b') out += `**${inlineMarkdown(child)}**`
+        else if (tag === 'em' || tag === 'i') out += `*${inlineMarkdown(child)}*`
+        else if (tag === 'del' || tag === 's' || tag === 'strike') out += `~~${inlineMarkdown(child)}~~`
+        else if (tag === 'code') out += `\`${child.textContent ?? ''}\``
+        else if (tag === 'a') out += `[${inlineMarkdown(child)}](${child.getAttribute('href') ?? ''})`
+        else if (tag === 'img') out += `![${child.getAttribute('alt') ?? ''}](${child.getAttribute('src') ?? ''})`
+        else out += inlineMarkdown(child)
+      }
+      return out
+    }
+
+    /** Markdown for one pipe table, keeping the first row as the header. */
+    function tableMarkdown(table) {
+      const rows = [...table.querySelectorAll('tr')]
+      if (rows.length === 0) return ''
+      const cellsOf = row => [...row.children].filter(cell => cell.tagName === 'TH' || cell.tagName === 'TD')
+      const cellText = (cell) => inlineMarkdown(cell).replace(/\n+/gu, ' ').replace(/\|/gu, '\\|').trim()
+      const lines = rows.map(row => `| ${cellsOf(row).map(cellText).join(' | ')} |`)
+      const width = Math.max(1, cellsOf(rows[0]).length)
+      const separator = `| ${new Array(width).fill('---').join(' | ')} |`
+      return [lines[0], separator, ...lines.slice(1)].join('\n')
+    }
+
+    /**
+     * Markdown for the block rendered inside `element`, read back from the DOM
+     * after an in-place edit. Null when the block carries no editable text.
+     */
+    function serializeElement(element) {
+      const node = element.firstElementChild
+      if (node === null) return null
+      const tag = node.tagName.toLowerCase()
+      if (tag === 'figure' || tag === 'hr') return null
+      if (tag === 'table') return tableMarkdown(node)
+      if (tag === 'div') {
+        const table = node.querySelector('table')
+        return table === null ? null : tableMarkdown(table)
+      }
+      if (tag === 'ul' || tag === 'ol') {
+        const ordered = tag === 'ol'
+        return [...node.children]
+          .filter(child => child.tagName === 'LI')
+          .map((item, index) => `${ordered ? `${index + 1}.` : '-'} ${inlineMarkdown(item).replace(/\n+$/u, '')}`)
+          .join('\n')
+      }
+      if (tag === 'blockquote') {
+        return inlineMarkdown(node)
+          .replace(/\n+$/u, '')
+          .split('\n')
+          .map(line => (line === '' ? '>' : `> ${line}`))
+          .join('\n')
+      }
+      if (/^h[1-6]$/u.test(tag)) {
+        const level = Math.min(Number(tag.slice(1)), 6)
+        return `${'#'.repeat(level)} ${inlineMarkdown(node).replace(/\n+$/u, '')}`
+      }
+      if (tag === 'p') return inlineMarkdown(node).replace(/\n+$/u, '')
+      return null
+    }
+
+    /** Insert a soft line break at the caret without letting the browser split the block. */
+    function insertLineBreak() {
+      try {
+        if (document.execCommand('insertLineBreak')) return
+      } catch {
+        /* fall through to the range path */
+      }
+      const selection = window.getSelection()
+      if (selection === null || selection.rangeCount === 0) return
+      const range = selection.getRangeAt(0)
+      range.deleteContents()
+      const br = document.createElement('br')
+      range.insertNode(br)
+      range.setStartAfter(br)
+      range.collapse(true)
+      selection.removeAllRanges()
+      selection.addRange(range)
+    }
+
+    /** Insert pasted text as plain text, never as foreign markup. */
+    function insertPlainText(text) {
+      try {
+        if (document.execCommand('insertText', false, text)) return
+      } catch {
+        /* fall through to the range path */
+      }
+      const selection = window.getSelection()
+      if (selection === null || selection.rangeCount === 0) return
+      const range = selection.getRangeAt(0)
+      range.deleteContents()
+      const node = document.createTextNode(text)
+      range.insertNode(node)
+      range.setStartAfter(node)
+      range.collapse(true)
+      selection.removeAllRanges()
+      selection.addRange(range)
     }
 
     /** The rendered document, read-only; every visible character keeps its source offset. */
@@ -2717,32 +2825,13 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
 .rd-block:hover { background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent); }
 .rd-block > :first-child { margin-top: 0; }
 .rd-block > :last-child { margin-bottom: 0; }
-.rd-block-edit {
-  margin: 2px -8px 6px -10px;
-  padding: 6px 8px 8px 10px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 5%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dsw-alias-brand-primary) 22%, transparent);
+.rd-block[contenteditable='true'] { outline: none; }
+.rd-block[contenteditable='true']:focus {
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 6%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dsw-alias-brand-primary) 26%, transparent);
 }
-.rd-block-input {
-  display: block;
-  width: 100%;
-  min-height: 44px;
-  padding: 8px 10px;
-  border: 0.5px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-base);
-  color: inherit;
-  font: inherit;
-  line-height: 1.7;
-  resize: vertical;
-  outline: none;
-}
-.rd-block-input:focus-visible {
-  border-color: var(--dsw-alias-brand-primary);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-brand-primary) 28%, transparent);
-}
-.rd-block-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
+.rd-block[contenteditable='false'] { cursor: default; }
+.rd-block table { cursor: text; }
 .rd-image { margin: 14px 0; }
 .rd-image img { display: block; max-width: 100%; height: auto; border-radius: 8px; }
 .rd-image figcaption {
@@ -4004,7 +4093,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
       const [widths, setWidths] = useState(readWidths)
       const [pendingPackage, setPendingPackage] = useState(null)
       const [highlight, setHighlight] = useState({ ids: [], nonce: 0 })
-      const [editingBlock, setEditingBlock] = useState(null)
+      const [frozen, setFrozen] = useState(null)
       const [dragging, setDragging] = useState('')
       const [filter, setFilter] = useState('all')
       const [expanded, setExpanded] = useState(() => new Set())
@@ -4043,7 +4132,9 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
 
       // Ranges that still match the text, merged for one band per block.
       const marks = useMemo(() => reviewedMarks(runs, snapshot.text), [runs, snapshot.text])
-      const blocks = useMemo(() => parseBlocks(snapshot.text), [snapshot.text])
+      const viewText = frozen?.text ?? snapshot.text
+      const viewMarks = frozen?.marks ?? marks
+      const blocks = useMemo(() => parseBlocks(viewText), [viewText])
       const markTitle = useCallback(
         index => t('markResults').replace('{count}', String(marks[index]?.runs.length ?? 0)),
         [marks, t],
@@ -4119,41 +4210,31 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
         revealRuns(mark.runs.map(run => run.id))
       }, [marks, revealRuns])
 
-      /** Start editing one block in place, with its exact source slice. */
-      const startBlockEdit = useCallback((index) => {
-        const block = blocks[index]
+      /**
+       * Editing happens inside the rendered block: focus freezes the rendered
+       * tree so streamed results cannot rewrite the DOM under the caret, and
+       * blur serialises that block back to Markdown.
+       */
+      const beginBlockEdit = useCallback(() => {
+        if (frozen !== null) return
+        setFrozen({ text: store.get().text, marks })
+      }, [frozen, marks])
+
+      const finishBlockEdit = useCallback((element) => {
+        const current = frozen
+        setFrozen(null)
+        if (current === null || element === null) return
+        const index = Number(element.getAttribute('data-block'))
+        const block = parseBlocks(current.text)[index]
         if (block === undefined) return
-        const text = store.get().text
-        setEditingBlock({ index, draft: text.slice(block.start, block.end) })
-      }, [blocks])
+        const markdown = serializeElement(element)
+        if (markdown === null) return
+        if (markdown === current.text.slice(block.start, block.end)) return
+        store.update({ text: current.text.slice(0, block.start) + markdown + current.text.slice(block.end) })
+      }, [frozen])
 
-      const commitBlock = useCallback(() => {
-        const editing = editingBlock
-        if (editing === null) return
-        const block = blocks[editing.index]
-        setEditingBlock(null)
-        if (block === undefined) return
-        const text = store.get().text
-        if (editing.draft === text.slice(block.start, block.end)) return
-        store.update({ text: text.slice(0, block.start) + editing.draft + text.slice(block.end) })
-      }, [blocks, editingBlock])
-
-      /** Clicks in the block view open the clicked block unless it belongs to a mark. */
-      const onBlocksClick = useCallback((event) => {
-        if (editingBlock !== null) return
-        const target = event.target
-        if (typeof target?.closest !== 'function') return
-        if (target.closest('[data-mark]') !== null) return
-        if (target.closest('.rd-block-edit') !== null) return
-        const dom = window.getSelection()
-        if (dom !== null && !dom.isCollapsed) return
-        const wrapper = target.closest('[data-block]')
-        if (wrapper === null) return
-        startBlockEdit(Number(wrapper.getAttribute('data-block')))
-      }, [editingBlock, startBlockEdit])
-
-      // Leaving the block editor (a replace, an import, a new document) drops the draft.
-      useEffect(() => { setEditingBlock(null) }, [snapshot.text])
+      // A replace or an import during an edit abandons the frozen tree.
+      useEffect(() => { setFrozen(null) }, [snapshot.text])
 
       const toggleRun = useCallback((id) => {
         setExpanded((current) => {
@@ -5070,56 +5151,36 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
                         'aria-label': t('manuscript'),
                         onMouseUp: event => readViewSelection(event.currentTarget),
                         onKeyUp: event => readViewSelection(event.currentTarget),
-                        onClick: (event) => {
-                          onPreviewClick(event)
-                          onBlocksClick(event)
-                        },
+                        onClick: onPreviewClick,
                       },
                       h('p', { className: 'rd-block-hint' }, t('blockEditHint')),
-                      blocks.map((block, index) => (
-                        editingBlock !== null && editingBlock.index === index
-                          ? h('div', {
-                            key: `e${index}`,
-                            className: 'rd-block-edit',
-                            onBlur: (event) => {
-                              const next = event.relatedTarget
-                              if (next !== null && event.currentTarget.contains(next)) return
-                              commitBlock()
-                            },
-                          },
-                          h('textarea', {
-                            className: 'rd-block-input',
-                            value: editingBlock.draft,
-                            rows: Math.min(18, Math.max(2, editingBlock.draft.split('\n').length)),
-                            autoFocus: true,
-                            spellCheck: false,
-                            'aria-label': t('manuscript'),
-                            onChange: event => setEditingBlock({ index, draft: event.target.value }),
-                            onKeyDown: (event) => {
-                              if (event.key === 'Escape') {
+                      blocks.map((block, index) => {
+                        const editable = block.kind !== 'image' && block.kind !== 'hr'
+                        return h('div', {
+                          key: `b${index}`,
+                          className: 'rd-block',
+                          'data-block': index,
+                          contentEditable: editable,
+                          suppressContentEditableWarning: true,
+                          spellCheck: editable,
+                          ...(editable
+                            ? {
+                              onFocus: beginBlockEdit,
+                              onBlur: event => finishBlockEdit(event.currentTarget),
+                              onKeyDown: (event) => {
+                                if (event.key !== 'Enter' || event.metaKey || event.ctrlKey || event.altKey) return
                                 event.preventDefault()
-                                setEditingBlock(null)
-                              } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                                insertLineBreak()
+                              },
+                              onPaste: (event) => {
                                 event.preventDefault()
-                                commitBlock()
-                              }
-                            },
-                          }),
-                          h('div', { className: 'rd-block-actions' },
-                            h('button', {
-                              type: 'button',
-                              className: 'rd-mini',
-                              onMouseDown: event => event.preventDefault(),
-                              onClick: commitBlock,
-                            }, t('blockCommit')),
-                            h('button', {
-                              type: 'button',
-                              className: 'rd-mini',
-                              onClick: () => setEditingBlock(null),
-                            }, t('blockCancel'))))
-                          : h('div', { key: `b${index}`, className: 'rd-block', 'data-block': index },
-                            renderBlock(block, index, marks, markTitle))
-                      )))))),
+                                const text = event.clipboardData?.getData('text/plain') ?? ''
+                                if (text !== '') insertPlainText(text)
+                              },
+                            }
+                            : {}),
+                        }, renderBlock(block, index, viewMarks, markTitle))
+                      }))))),
 
 
           // 审查 -----------------------------------------------------------------
