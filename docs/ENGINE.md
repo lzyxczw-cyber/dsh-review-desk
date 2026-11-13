@@ -28,9 +28,14 @@ git checkout engine
 git checkout main
 ```
 
-## 已知限制
+## 修改如何回到文稿
 
-- 引擎只做**只读展示**（`documentMode: 'viewing'`）。文字修改仍写回 Markdown 文本模型；引擎画布显示的是**导入时的原始文件**，所以替换后画布不会跟着变，需要「源码/编辑」视图确认文本。这是当前分支最大的缺口。
+- 「文档」视图是只读的，但**确认替换后会把同一处改动写回 docx**：用引擎的 Document API（`doc.query.match` → `doc.replace`）定位并替换，画布随即显示新文字；
+- 匹配不到唯一位置时（例如 Markdown 里的 `**` 标记在 docx 中并不存在），文稿模型照常更新，画布不动，并提示原因；
+- 工具栏「导出 → 导出 .docx（含修改）」直接从引擎导出，格式与修改一并带走；
+- 自动替换在本分支关闭，所有替换都先过确认框。
+
+## 已知限制
 - 划线高亮只在**单个文本节点内**匹配；跨节点/跨页的长段落可能漏画。
 - PDF 还没接引擎（仍用原有的原稿逐页渲染）；`pdf.js` 是下一步。
 - **许可**：SuperDoc 社区版是 **AGPL-3.0**。仓库整体是 MIT，合并前需要决定：整仓改 AGPL、或把引擎改为用户自行安装的运行时依赖、或换 MIT 的 `@forevka/wordcanvas`。不解决许可之前不要把 `vendor/` 合并回 `main`。
@@ -38,6 +43,6 @@ git checkout main
 
 ## 下一步建议
 
-1. 把「文档」视图的替换真正写回 docx：用 `superdoc.activeEditor.doc.query.match` + `doc.replace`（引擎已提供 Document API），再 `superdoc.export()` 导出；
-2. 或者反向：以 docx 为唯一事实源，文本模型改为从 docx 提取，评审偏移全部走引擎的 Document API——工作量大，但这是「真所见即所得」的唯一终点；
+1. 替换后重绘引擎里的划线（当前只在引擎 ready 时画一次，替换后新文字暂时没有下划线）；
+2. 反向以 docx 为唯一事实源：评审偏移全部走引擎的 Document API——工作量大，但这是「真所见即所得」的终点；
 3. PDF 接 `pdfjs-dist`（Apache-2.0，无许可问题）。

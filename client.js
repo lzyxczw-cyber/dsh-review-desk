@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({
     /** Id shared by the sidebar entry and the main panel it opens. */
     const PANEL_ID = 'review-desk'
     /** Build tag, surfaced in the page attribute and the console. */
-    const BUILD = '2026-11-13.12-engine.2'
+    const BUILD = '2026-11-13.13-engine.3'
     /** Engine branch: replacements are confirmed in a local dialog, never applied silently. */
     const CONFIRM_REPLACE = true
     /** Locale namespace owned by this plugin. */
@@ -137,6 +137,9 @@ window.__ModuleLoader__.load({
       modePreview: '预览',
       modeDoc: '文档',
       engineFailed: '排版引擎加载失败：',
+      exportDocx: '导出 .docx（含修改）',
+      engineSyncFailed: '文稿已更新，但排版引擎里没找到唯一匹配的位置；如需同步，请在文档里手动改，或导出后回到编辑视图。',
+      engineNotReady: '排版引擎还没准备好。',
       replaceDialogTitle: '确认替换原文',
       replaceDialogBody: '只有确认后才会改动文稿，取消则文稿保持不变。',
       replaceDialogOld: '原文',
@@ -307,6 +310,9 @@ window.__ModuleLoader__.load({
       modePreview: 'Preview',
       modeDoc: 'Document',
       engineFailed: 'The layout engine failed to load: ',
+      exportDocx: 'Export .docx (with edits)',
+      engineSyncFailed: 'The manuscript changed, but the engine found no unique match; edit it in the document or export from the text view.',
+      engineNotReady: 'The layout engine is not ready yet.',
       replaceDialogTitle: 'Replace the passage',
       replaceDialogBody: 'The manuscript changes only after you confirm; cancel leaves it untouched.',
       replaceDialogOld: 'Before',
@@ -3912,9 +3918,11 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
     }
 
     /** The DOCX engine surface: read-only layout, marks, selection back to the text model. */
-    function DocEngine({ file, t, marks, onSelect, onFail }) {
+    function DocEngine({ file, t, marks, onSelect, onFail, onInstance }) {
       const hostRef = useRef(null)
       const [failed, setFailed] = useState('')
+      const callbacks = useRef({ onFail, onInstance })
+      callbacks.current = { onFail, onInstance }
       useEffect(() => {
         let instance = null
         let disposed = false
@@ -3930,22 +3938,26 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
                 selector: `#${id}`,
                 document: file,
                 documentMode: 'viewing',
-                onReady: () => { paintEngineMarks(host, marks, () => '') },
+                onReady: () => {
+                  paintEngineMarks(host, marks, () => '')
+                  callbacks.current.onInstance?.(instance)
+                },
               })
             } catch (error) {
               setFailed(error instanceof Error ? error.message : String(error))
-              onFail?.(error)
+              callbacks.current.onFail?.(error)
             }
           })
           .catch((error) => {
             setFailed(error instanceof Error ? error.message : String(error))
-            onFail?.(error)
+            callbacks.current.onFail?.(error)
           })
         return () => {
           disposed = true
+          callbacks.current.onInstance?.(null)
           try { instance?.destroy?.() } catch { /* teardown is best effort */ }
         }
-      }, [file, marks, onFail])
+      }, [file, marks])
 
       return h('div', { className: 'rd-doc-engine' },
         failed === ''
@@ -4362,6 +4374,8 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
       const [widths, setWidths] = useState(readWidths)
       const [pendingPackage, setPendingPackage] = useState(null)
       const [pendingReplace, setPendingReplace] = useState(null)
+      const [engineReady, setEngineReady] = useState(false)
+      const superdocRef = useRef(null)
       const [highlight, setHighlight] = useState({ ids: [], nonce: 0 })
       const [frozen, setFrozen] = useState(null)
       const [dragging, setDragging] = useState('')
@@ -4911,12 +4925,37 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
         }
       }, [runs])
 
+      /**
+       * Mirror one replacement into the DOCX engine, so the page view keeps
+       * showing what the manuscript now says. Best effort: the engine refuses
+       * when the old text is not an unambiguous match.
+       */
+      const syncEngineReplace = useCallback(async (oldText, body) => {
+        const doc = superdocRef.current?.activeEditor?.doc
+        if (doc === undefined || doc === null || oldText.trim() === '') return false
+        try {
+          const match = await doc.query.match({
+            select: { type: 'text', pattern: oldText },
+            require: 'exactlyOne',
+          })
+          const item = match?.items?.[0]
+          if (item === undefined || item.matchKind !== 'text') return false
+          const receipt = await doc.replace(
+            { target: item.target, text: body },
+            { expectedRevision: match.evaluatedRevision },
+          )
+          return receipt?.success === true
+        } catch {
+          return false
+        }
+      }, [])
+
       /** Apply a confirmed replacement through the shared path. */
       const applyReplace = useCallback((pending) => {
         if (pending === null) return
         setPendingReplace(null)
-        const current = store.get().text
         const { run } = pending
+        const oldText = run.wholeDocument === true ? '' : run.selection.text
         const range = replacePassage(run.id, pending.body, { appendWhenStale: true })
         if (range === null) {
           showNotice(t('failed'))
@@ -4924,6 +4963,26 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
         }
         setSelection({ ...range, text: pending.body })
         showNotice(t('replaceApplied'))
+        if (oldText !== '' && superdocRef.current !== null) {
+          void syncEngineReplace(oldText, pending.body).then((ok) => {
+            if (!ok) showNotice(t('engineSyncFailed'))
+          })
+        }
+      }, [showNotice, syncEngineReplace, t])
+
+      /** Download the edited DOCX straight from the engine. */
+      const exportDocx = useCallback(() => {
+        const instance = superdocRef.current
+        if (instance === null) {
+          showNotice(t('engineNotReady'))
+          return
+        }
+        try {
+          const title = store.get().title.trim() === '' ? 'review' : store.get().title.trim()
+          void instance.export({ triggerDownload: true, exportedName: title })
+        } catch {
+          showNotice(t('failed'))
+        }
       }, [showNotice, t])
 
       const undoRunReplace = useCallback((run) => {
@@ -5337,6 +5396,9 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
               items: [
                 { key: 'md', label: t('exportMd'), description: '.md', onSelect: exportFile },
                 { key: 'package', label: t('exportPackage'), description: '.json', onSelect: exportPackageFile },
+                ...(engineReady
+                  ? [{ key: 'docx', label: t('exportDocx'), description: '.docx', onSelect: exportDocx }]
+                  : []),
               ],
             }),
             h(InlineButton, {
@@ -5464,6 +5526,10 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
                             setSelection({ ...found, text: snapshot.text.slice(found.start, found.end) })
                           },
                           onFail: () => {},
+                          onInstance: (instance) => {
+                            superdocRef.current = instance
+                            setEngineReady(instance !== null)
+                          },
                         })
                       : h('div', {
                         className: 'rd-preview rd-blocks',
