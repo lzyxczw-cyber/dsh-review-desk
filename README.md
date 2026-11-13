@@ -43,7 +43,17 @@ git clone https://github.com/lzyxczw-cyber/dsh-review-desk.git
 
 安装后重启或刷新页面，左侧栏出现「文稿审核台」。
 
-### 2. 依赖
+### 2. 市场索引（Discover）
+
+本仓库自带一个格式 1 的市场索引 `market/index.json`，可在 DSH 的 Plugins → Discover 中：
+
+1. **Add index source** 填入
+   `https://raw.githubusercontent.com/lzyxczw-cyber/dsh-review-desk/main/market/index.json`；
+2. 在列表里找到「Review desk / 文稿审核台」，**Install**。
+
+索引的维护方式见 [`market/README.md`](market/README.md)；改了代码后跑一次 `node scripts/market-index.mjs` 并提交 `market/index.json` 即可发布新版本。
+
+### 3. 依赖
 
 - DSH 已配置至少一个模型通道（审核请求走 profile 的默认模型或面板里选的模型）；
 - 「来源查证」需要 profile 里配置了 web search provider（没有时会明确提示，其余功能不受影响）；
