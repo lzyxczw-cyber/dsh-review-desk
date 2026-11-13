@@ -1527,6 +1527,30 @@ await test('each action paints its own underline colour, and one passage can sho
   await page.unmount()
 })
 
+
+await test('a protected or renamed legacy Word file explains what to do', async () => {
+  const page = mount({ seed: { title: '保留', text: '保留的内容。', runs: [] } })
+  await page.render()
+  const ole = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0, 0, 0])
+  await importFile(page, '加密的报告.docx', ole)
+  const toast = page.container.querySelector('.rd-toast')
+  assert.ok(toast !== null, 'a notice is shown')
+  assert.ok(toast.textContent.includes('加了密码'), toast.textContent)
+  assert.ok(page.container.querySelector('textarea.rd-text').value.includes('保留的内容。'), 'the manuscript is untouched')
+  await page.unmount()
+})
+
+await test('a .docx without the document part says the structure is broken', async () => {
+  const page = mount({ seed: { title: '结构', text: '原文。', runs: [] } })
+  await page.render()
+  const zip = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+  await importFile(page, '坏结构.docx', zip)
+  const toast = page.container.querySelector('.rd-toast')
+  assert.ok(toast !== null, 'a notice is shown')
+  assert.ok(toast.textContent.includes('word/document.xml') || toast.textContent.includes('压缩结构'), toast.textContent)
+  await page.unmount()
+})
+
 if (failures > 0) {
   console.error(`\n${failures} client check(s) failed`)
   process.exitCode = 1
