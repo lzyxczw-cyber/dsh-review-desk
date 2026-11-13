@@ -32,15 +32,16 @@ WPS 文字（真 .docx）
 
 `index.js` 的 `startWpsBridge(ctx)` 在插件 `install()` 时启动：
 
-- `GET /health` → `{"ok":true,"service":"review-desk-wps-bridge","bridge":"1"}`
+- `GET /health` → `{"ok":true,"service":"review-desk-wps-bridge","bridge":"1","auth":"open|token"}`
 - `GET /models` → 默认模型/推理等级、可选模型（含推理等级）、各动作输出上限
 - `POST /analyze`（JSON，字段同 DSH 面板请求）→ `application/x-ndjson` 流，帧类型：
   `meta` / `stage` / `sources` / `delta` / `warning` / `done` / `error`
 - 请求可选字段：`provider` / `model` / `reasoningEffort` / `maxTokens`（1000–16000，0 或省略用动作默认）
 - 默认输出上限：来源/逻辑/关联/要求 6000 tokens，扩写 8000 tokens
-- CORS：`access-control-allow-origin: *`（回环，无需凭据）
+- **来源限制**：只接受回环来源（`http://127.0.0.1[:port]`、`http://localhost[:port]`、打包后的 `null` 来源）或非浏览器客户端；其他 Origin 一律 403
+- **可选令牌**：设置 `REVIEW_DESK_WPS_TOKEN` 后，`/models`、`/analyze` 需带 `x-review-desk-token` 头（`/health` 保持开放用于连通性检测）
 - Body 上限 4 MB，单次审核超时 180 s
-- 环境变量：`REVIEW_DESK_WPS_BRIDGE=0` 关闭；`REVIEW_DESK_WPS_BRIDGE_PORT` 改端口
+- 环境变量：`REVIEW_DESK_WPS_BRIDGE=0` 关闭；`REVIEW_DESK_WPS_BRIDGE_PORT` 改端口；`REVIEW_DESK_WPS_TOKEN` 启用令牌
 
 请求示例：
 
@@ -66,21 +67,26 @@ curl -N http://127.0.0.1:47831/analyze \
 | 任务窗格 → 本机 HTTP（fetch，CORS） | ✅ |
 | **v0.2 端到端**：扩写 695 字 → 定位 → 批注 683 字 → 修订替换 365 字 → **撤销替换（拒绝 2 个修订，正文长度/上下文/范围全部还原）** → 追加要求 240 字 | ✅ |
 | **v0.2 面板工作流**（jsdom）：历史持久化/筛选/折叠、追加要求链、输出触顶重试、模型/推理/上限设置随请求发送 | ✅ |
+| **v0.3 两栏 + 右侧停靠**：任务窗格 `DockPosition=2`、宽 720px；左栏 300px / 右栏 420px（flex row），窄窗自动堆叠 | ✅ |
+| **v0.3 端到端**：扩写 720 字 → 定位并高亮 → 批注 708 字 → 修订替换 231 字 → 撤销替换（拒绝 2 个修订，正文还原）→ 追加要求 326 字 | ✅ |
+| **v0.3 安全**：外部 Origin 返回 403、回环 Origin 反射、`REVIEW_DESK_WPS_TOKEN` 令牌校验（bridge 测试） | ✅ |
 
-验证产物：`wps-review-demo/evidence/v0.2/`（report-v0.2.jsonl、wps-review-desk-verify-v0.2.docx，含 `<w:ins>`×7、`<w:del>`×5、批注）。
+验证产物：`wps-review-demo/evidence/v0.2/`、`v0.3/`（报告、导出的 docx、两栏面板截图 `panel-two-column-right.png`）。
 
-## 面板工作流（v0.2）
+## 面板工作流（v0.3）
 
-- 结果历史保存在本机 localStorage（最多 20 条），支持按动作筛选、折叠/展开、清空；
+- **两栏任务窗格**：默认停靠右侧（`DockPosition=2`），最小宽度 560px；左栏为设置 / 选区 / 执行 / 历史列表，右栏为选中结果详情；窗格窄于 640px 时自动堆叠；
+- 结果历史保存在本机 localStorage（最多 100 条），支持按动作筛选、关键词搜索、清空；
 - 任意结果可「追加要求」继续修改（custom + revise），形成修订链；
 - 替换原文以 `TrackRevisions` 写入；「撤销替换」会拒绝覆盖该范围的修订并还原原文（失败时提示用 WPS 撤销）；
-- 「定位回原文」选中并滚动到文档中的原文位置；
-- 顶部设置可选择 DSH 里的模型通道、推理等级和输出上限；触顶时提供「提高输出上限重试」。
+- 「定位回原文」选中并滚动到文档中的原文位置，并短暂高亮；
+- 设置里可选择 DSH 里的模型通道、推理等级和输出上限；触顶时提供「提高输出上限重试」；
+- 快捷键：⌘/Ctrl+Enter 执行、⌘/Ctrl+K 搜索、Esc 退出输入。
 
 ## 已知风险
 
 1. **Mac 分发**：仅支持本地 `publish.xml` 侧载；WPS Mac 在线部署（58890）不可用，正式分发需评估 WPS 开放平台（Windows 为主）。
-2. **桥接安全**：只监听 `127.0.0.1`、无鉴权；任何本机进程都能调用（会消耗模型额度）。后续可加随机 token（写入 `publish.xml` 与加载项配置）。
+2. **桥接安全**：只监听 `127.0.0.1`；已加来源白名单和可选令牌（`REVIEW_DESK_WPS_TOKEN`），默认无令牌时本机进程仍可调用（会消耗模型额度），建议开启令牌。
 3. **版本差异**：WPS 各版本对 `TrackRevisions` / `Comments` / 事件的支持可能有差异，需要兼容性测试。
 4. **加载项只在启动时加载**：迭代/更新需要重启 WPS。
 5. **任务窗格内核**：CEF Chrome 104，现代框架可用但需回归。

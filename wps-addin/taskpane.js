@@ -1,19 +1,18 @@
 /**
- * Review Desk · WPS 任务窗格（v0.2）。
+ * Review Desk · WPS 任务窗格（v0.3，两栏布局）。
  *
- * 读取 WPS 选区 → 调本机 DSH 的 review-desk 桥（默认 http://127.0.0.1:47831）
- * → 流式展示审核结果 → 以「批注」或「修订替换」写回文档。
- * 结果历史保存在本机 localStorage；支持筛选、折叠、追加要求、撤销替换、定位回原文。
+ * 左栏：设置 / 选区 / 执行 / 历史列表（搜索、筛选）。
+ * 右栏：选中结果的详情、流式输出与写回操作（批注 / 修订替换 / 撤销 / 追加要求 / 定位）。
  */
 (function () {
   'use strict'
 
   var DEFAULT_BRIDGE = 'http://127.0.0.1:47831'
   var BRIDGE_KEY = 'wps-review-desk.bridge'
-  var SETTINGS_KEY = 'wps-review-desk.settings.v1'
-  var HISTORY_KEY = 'wps-review-desk.history.v1'
-  var HISTORY_LIMIT = 20
-  var HISTORY_BYTES = 480000
+  var SETTINGS_KEY = 'wps-review-desk.settings.v2'
+  var HISTORY_KEY = 'wps-review-desk.history.v2'
+  var HISTORY_LIMIT = 100
+  var HISTORY_BYTES = 900000
   var VERIFY = /[?&]verify=1(?:&|$)/.test(window.location.search)
   var ACTION_LABELS = { source: '来源查证', logic: '逻辑分析', expand: '扩写', relate: '关联分析', custom: '自由要求' }
   var ACTION_ORDER = ['source', 'logic', 'expand', 'relate', 'custom']
@@ -32,18 +31,24 @@
     { value: 12000, name: '12000 tokens' },
     { value: 16000, name: '16000 tokens（上限）' },
   ]
+  var HIGHLIGHT_COLOR = 7 /* wdYellow */
 
   var state = {
     bridge: DEFAULT_BRIDGE,
-    settings: { provider: '', model: '', reasoningEffort: '', maxTokens: 0 },
+    settings: { provider: '', model: '', reasoningEffort: '', maxTokens: 0, token: '' },
     catalog: null,
     docName: '',
     selection: null,
     running: false,
     health: 'unknown',
     results: [],
+    selectedId: null,
+    detailId: null,
+    detailDom: null,
     filter: 'all',
+    search: '',
     seq: 0,
+    rowMap: new Map(),
     historyTimer: 0,
     toastTimer: 0,
   }
@@ -98,7 +103,7 @@
    * ------------------------------------------------------------------ */
 
   function readSettings() {
-    var settings = { provider: '', model: '', reasoningEffort: '', maxTokens: 0 }
+    var settings = { provider: '', model: '', reasoningEffort: '', maxTokens: 0, token: '' }
     try {
       var raw = localStorage.getItem(SETTINGS_KEY)
       if (raw) {
@@ -108,6 +113,7 @@
           if (typeof parsed.model === 'string') settings.model = parsed.model
           if (typeof parsed.reasoningEffort === 'string') settings.reasoningEffort = parsed.reasoningEffort
           if (Number.isFinite(Number(parsed.maxTokens)) && Number(parsed.maxTokens) > 0) settings.maxTokens = Number(parsed.maxTokens)
+          if (typeof parsed.token === 'string') settings.token = parsed.token
         }
       }
     } catch (error) { /* ignore */ }
@@ -117,6 +123,12 @@
   function persistSettings() {
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings)) } catch (error) { /* ignore */ }
     renderSettingsSummary()
+  }
+
+  function requestHeaders() {
+    var headers = { 'content-type': 'application/json' }
+    if (state.settings.token !== '') headers['x-review-desk-token'] = state.settings.token
+    return headers
   }
 
   function applyCatalog(catalog) {
@@ -211,12 +223,7 @@
       var model = findSelectedModel()
       parts.push(model ? `${settings.provider} / ${model.name || settings.model}` : `${settings.provider} / ${settings.model}`)
     }
-    if (settings.reasoningEffort) {
-      var effort = EFFORT_OPTIONS.concat((findSelectedModel()?.reasoning?.efforts || []).map(function (item) {
-        return { id: String(item.id), name: String(item.name || item.id) }
-      })).filter(function (item) { return item.id === settings.reasoningEffort })
-      parts.push(`推理 ${effort.length > 0 ? effort[0].name : settings.reasoningEffort}`)
-    }
+    if (settings.reasoningEffort) parts.push(`推理 ${settings.reasoningEffort}`)
     if (settings.maxTokens > 0) parts.push(`上限 ${settings.maxTokens}`)
     refs.settingsSummary.textContent = parts.length === 0 ? '（默认）' : `· ${parts.join(' · ')}`
   }
@@ -240,7 +247,7 @@
       .then(function (response) { return response.json() })
       .then(function (info) {
         clearTimeout(timer)
-        if (info && info.ok === true) acceptHealth()
+        if (info && info.ok === true) acceptHealth(info)
         else setHealth('down')
       })
       .catch(function () {
@@ -249,9 +256,12 @@
       })
   }
 
-  function acceptHealth() {
+  function acceptHealth(info) {
     setHealth('ready')
-    report({ kind: 'wps-health', ok: true, bridge: state.bridge, at: new Date().toISOString() })
+    if (info && info.auth === 'token' && state.settings.token === '' && refs.bridgeHint) {
+      refs.bridgeHint.textContent = '桥已连接，但它要求访问令牌：请在下方填写与 DSH 的 REVIEW_DESK_WPS_TOKEN 相同的值。'
+    }
+    report({ kind: 'wps-health', ok: true, bridge: state.bridge, auth: info && info.auth, at: new Date().toISOString() })
     fetchModels()
     maybeSelfTest()
   }
@@ -275,21 +285,32 @@
 
   function fetchModels() {
     if (!refs.settingModel) return
-    fetch(`${state.bridge}/models`)
-      .then(function (response) { return response.json() })
+    fetch(`${state.bridge}/models`, { headers: requestHeaders() })
+      .then(function (response) {
+        if (response.status === 401) {
+          var error = new Error('需要访问令牌')
+          error.status = 401
+          throw error
+        }
+        return response.json()
+      })
       .then(function (catalog) {
         applyCatalog(catalog)
         if (refs.settingsHint) {
           var defaultRoute = catalog && catalog.default
           refs.settingsHint.textContent = defaultRoute && defaultRoute.provider
-            ? `默认：${defaultRoute.provider} / ${defaultRoute.model}${defaultRoute.reasoningEffort ? ` · 推理 ${defaultRoute.reasoningEffort}` : ''}。输出上限越高越慢、费用越高。`
-            : '默认使用 DSH 的模型与推理设置；输出上限越高越慢、费用越高。'
+            ? `默认：${defaultRoute.provider} / ${defaultRoute.model}${defaultRoute.reasoningEffort ? ` · 推理 ${defaultRoute.reasoningEffort}` : ''}。上限越高越慢、费用越高。`
+            : '默认使用 DSH 的模型与推理设置；上限越高越慢、费用越高。'
         }
         report({ kind: 'wps-models', ok: true, providers: catalog && Array.isArray(catalog.providers) ? catalog.providers.length : 0 })
       })
-      .catch(function () {
-        if (refs.settingsHint) refs.settingsHint.textContent = '读取模型列表失败：只提供默认设置。'
-        report({ kind: 'wps-models', ok: false })
+      .catch(function (error) {
+        if (refs.settingsHint) {
+          refs.settingsHint.textContent = error && error.status === 401
+            ? '模型列表需要访问令牌：请在「连接设置」里填写令牌。'
+            : '读取模型列表失败：只提供默认设置。'
+        }
+        report({ kind: 'wps-models', ok: false, status: error && error.status ? error.status : 0 })
       })
   }
 
@@ -310,12 +331,12 @@
       note: result.note,
       warning: result.warning,
       error: result.error,
+      errorKind: result.errorKind,
       selection: result.selection,
       parentId: result.parentId,
       original: result.original,
       maxTokens: result.maxTokens,
       applied: result.applied,
-      collapsed: result.collapsed === true,
     }
   }
 
@@ -325,11 +346,10 @@
       state.historyTimer = 0
       try {
         var results = state.results.slice(0, HISTORY_LIMIT)
-        var payload = JSON.stringify({ version: 1, results: results.map(serializeResult) })
-        if (payload.length > HISTORY_BYTES) {
-          var trimmed = JSON.parse(payload)
-          trimmed.results = trimmed.results.slice(0, Math.max(3, Math.floor(results.length / 2)))
-          payload = JSON.stringify(trimmed)
+        var payload = JSON.stringify({ version: 2, results: results.map(serializeResult) })
+        while (payload.length > HISTORY_BYTES && results.length > 5) {
+          results = results.slice(0, Math.max(5, Math.floor(results.length / 2)))
+          payload = JSON.stringify({ version: 2, results: results.map(serializeResult) })
         }
         localStorage.setItem(HISTORY_KEY, payload)
       } catch (error) { /* history is best-effort */ }
@@ -357,7 +377,8 @@
           sources: Array.isArray(item.sources) ? item.sources : [],
           note: typeof item.note === 'string' ? item.note : '',
           warning: typeof item.warning === 'string' ? item.warning : '',
-          error: item.status === 'running' ? '页面已刷新，本次结果中断' : (typeof item.error === 'string' ? item.error : ''),
+          error: typeof item.error === 'string' ? item.error : '',
+          errorKind: typeof item.errorKind === 'string' ? item.errorKind : '',
           selection: item.selection && typeof item.selection === 'object'
             ? { start: Number(item.selection.start) || 0, end: Number(item.selection.end) || 0, text: String(item.selection.text || '') }
             : null,
@@ -365,12 +386,11 @@
           original: typeof item.original === 'string' ? item.original : '',
           maxTokens: Number(item.maxTokens) || 0,
           applied: item.applied && typeof item.applied === 'object' ? item.applied : null,
-          collapsed: item.collapsed === true,
-          dom: null,
         }
         restored.push(result)
         if (result.id > state.seq) state.seq = result.id
       }
+      restored.sort(function (a, b) { return b.createdAt - a.createdAt })
       return restored.slice(0, HISTORY_LIMIT)
     } catch (error) {
       return []
@@ -379,36 +399,35 @@
 
   function clearHistory() {
     if (state.running) { toast('审核进行中，稍后再清空'); return }
-    if (!window.confirm('清空全部历史结果？此操作只影响面板，不改文档。')) return
+    if (!window.confirm('清空全部历史结果？只影响面板，不改文档。')) return
     state.results = []
-    refs.results.innerHTML = ''
-    renderEmpty()
-    renderFilters()
+    state.selectedId = null
+    state.detailId = null
     saveHistory()
+    renderHistory()
+    renderDetail(true)
     toast('已清空历史')
   }
 
   /* ------------------------------------------------------------------ *
-   * 选区面板
+   * 选区
    * ------------------------------------------------------------------ */
 
   function renderSelection() {
-    var selection = state.selection
     if (refs.docName) refs.docName.textContent = state.docName
+    var selection = state.selection
     if (refs.selectionPreview) {
       if (selection === null) {
         refs.selectionPreview.textContent = '尚未选中文字（在文档中拖动选中一段后再操作）'
         refs.selectionPreview.setAttribute('data-empty', '')
       } else {
-        var preview = selection.text.length > 220 ? `${selection.text.slice(0, 220)}…` : selection.text
+        var preview = selection.text.length > 160 ? `${selection.text.slice(0, 160)}…` : selection.text
         refs.selectionPreview.textContent = preview
         refs.selectionPreview.removeAttribute('data-empty')
       }
     }
     if (refs.selectionMeta) {
-      refs.selectionMeta.textContent = selection === null
-        ? ''
-        : `${selection.text.length} 字 · 位置 ${selection.start}–${selection.end}`
+      refs.selectionMeta.textContent = selection === null ? '' : `${selection.text.length} 字 · ${selection.start}–${selection.end}`
     }
     var disabled = selection === null || state.running
     for (var button of refs.actionButtons) button.disabled = disabled
@@ -437,6 +456,13 @@
     var maxTokens = options.maxTokens !== undefined ? options.maxTokens : settings.maxTokens
     if (maxTokens > 0) payload.maxTokens = maxTokens
     return payload
+  }
+
+  function findResult(id) {
+    for (var result of state.results) {
+      if (result.id === id) return result
+    }
+    return null
   }
 
   function runAnalysis(action, options) {
@@ -474,20 +500,19 @@
       note: '',
       warning: '',
       error: '',
+      errorKind: '',
       selection: selection,
       parentId: options.parentId || null,
       original: options.original || '',
       maxTokens: options.maxTokens !== undefined ? options.maxTokens : state.settings.maxTokens,
       applied: null,
-      collapsed: false,
-      dom: null,
     }
     state.results.unshift(result)
-    collapseAllExcept(result)
-    insertResultCard(result)
-    renderFilters()
-    saveHistory()
+    state.selectedId = result.id
+    renderHistory()
+    renderDetail(true)
     setRunning(true)
+    saveHistory()
 
     var payload = buildPayload(action, text, {
       manuscript: manuscript,
@@ -513,34 +538,32 @@
 
     fetch(`${state.bridge}/analyze`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: requestHeaders(),
       body: JSON.stringify(payload),
       signal: controller.signal,
     }).then(function (response) {
       if (!response.ok) {
         return response.json().then(function (info) {
-          throw new Error(info && info.error ? info.error : `HTTP ${response.status}`)
+          var error = new Error(info && info.error ? info.error : `HTTP ${response.status}`)
+          error.status = response.status
+          throw error
         }).catch(function (error) {
-          if (error instanceof Error && error.message.indexOf('HTTP ') === 0) throw error
-          throw new Error(`HTTP ${response.status}`)
+          if (error && error.status) throw error
+          var fallback = new Error(`HTTP ${response.status}`)
+          fallback.status = response.status
+          throw fallback
         })
       }
       return consumeStream(result, response)
     }).catch(function (error) {
       clearTimeout(timer)
-      var message = error && error.name === 'AbortError'
-        ? '请求超时或已取消'
-        : (error && error.message) || String(error)
-      if (result.status === 'running') {
-        result.status = 'error'
-        result.error = message
-      }
-      updateResultCard(result)
+      finishWithError(result, error)
     }).then(function () {
       clearTimeout(timer)
       if (result.status === 'running') result.status = 'done'
       setRunning(false)
-      updateResultCard(result)
+      if (state.selectedId === result.id && state.detailDom) updateDetail(result)
+      updateHistoryRow(result)
       renderFilters()
       saveHistory()
       report({
@@ -554,6 +577,24 @@
       if (typeof options.onSettled === 'function') options.onSettled(result)
     })
     return result
+  }
+
+  function finishWithError(result, error) {
+    var aborted = error && error.name === 'AbortError'
+    var status = error && error.status ? error.status : 0
+    result.status = 'error'
+    result.errorKind = aborted ? 'timeout' : status === 401 ? 'token' : status ? 'http' : 'network'
+    if (aborted) {
+      result.error = '请求超时（3 分钟）。可以缩短选中文字、提高输出上限后重试。'
+    } else if (status === 401) {
+      result.error = '需要访问令牌：请在左下「连接设置」里填写 REVIEW_DESK_WPS_TOKEN。'
+    } else if (status) {
+      result.error = (error && error.message) || `请求失败（HTTP ${status}）`
+    } else {
+      result.error = '连不上本机桥：请确认 DSH 正在运行，review-desk 处于 wps 分支，并点击「检测连接」。'
+    }
+    if (state.selectedId === result.id) updateDetail(result)
+    updateHistoryRow(result)
   }
 
   function consumeStream(result, response) {
@@ -589,11 +630,7 @@
     try { frame = JSON.parse(line) } catch (error) { return }
     switch (frame.type) {
       case 'meta':
-        result.meta = {
-          provider: frame.provider,
-          model: frame.model,
-          reasoningEffort: frame.reasoningEffort,
-        }
+        result.meta = { provider: frame.provider, model: frame.model, reasoningEffort: frame.reasoningEffort }
         break
       case 'stage':
         result.stage = STAGE_LABELS[frame.stage] || '处理中…'
@@ -615,11 +652,13 @@
       case 'error':
         result.status = 'error'
         result.error = typeof frame.message === 'string' ? frame.message : '审核失败'
+        result.errorKind = 'http'
         break
       default:
         return
     }
-    updateResultCard(result)
+    if (state.selectedId === result.id && state.detailDom) updateDetail(result)
+    updateHistoryRow(result)
   }
 
   function setRunning(running) {
@@ -628,7 +667,7 @@
   }
 
   /* ------------------------------------------------------------------ *
-   * 结果卡片
+   * 历史列表
    * ------------------------------------------------------------------ */
 
   function timeLabel(timestamp) {
@@ -644,82 +683,221 @@
     }
   }
 
+  function searchMatched(result) {
+    if (state.search === '') return true
+    var needle = state.search.toLowerCase()
+    var haystack = [
+      result.text,
+      result.instruction,
+      ACTION_LABELS[result.action] || '',
+      result.error || '',
+    ].join('\n').toLowerCase()
+    return haystack.indexOf(needle) >= 0
+  }
+
+  function visibleResults() {
+    return state.results.filter(function (result) {
+      if (state.filter !== 'all' && result.action !== state.filter) return false
+      return searchMatched(result)
+    })
+  }
+
+  function renderFilters() {
+    if (!refs.filterTabs) return
+    var counts = { all: state.results.length }
+    for (var action of ACTION_ORDER) counts[action] = 0
+    for (var item of state.results) {
+      if (counts[item.action] !== undefined) counts[item.action] += 1
+    }
+    var tabs = [{ key: 'all', label: '全部', count: counts.all }]
+    for (var key of ACTION_ORDER) tabs.push({ key: key, label: ACTION_LABELS[key], count: counts[key] })
+    refs.filterTabs.innerHTML = ''
+    for (var tab of tabs) {
+      var button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'rd-tab'
+      if (state.filter === tab.key) button.setAttribute('data-active', '')
+      button.textContent = `${tab.label}${tab.count > 0 ? ` ${tab.count}` : ''}`
+      button.addEventListener('click', (function (filterKey) {
+        return function () {
+          state.filter = filterKey
+          renderFilters()
+          renderHistory()
+        }
+      })(tab.key))
+      refs.filterTabs.appendChild(button)
+    }
+  }
+
+  function renderHistory() {
+    if (!refs.historyList) return
+    refs.historyList.innerHTML = ''
+    state.rowMap.clear()
+    var rows = visibleResults()
+    if (rows.length === 0) {
+      var empty = document.createElement('p')
+      empty.className = 'rd-history-empty'
+      empty.textContent = state.results.length === 0 ? '还没有结果。选中文字，从上面选一个动作开始。' : '没有符合筛选的历史结果。'
+      refs.historyList.appendChild(empty)
+    }
+    for (var result of rows) {
+      var row = document.createElement('button')
+      row.type = 'button'
+      row.className = 'rd-item'
+      row.setAttribute('data-action', result.action)
+      row.setAttribute('data-status', result.status)
+      if (result.id === state.selectedId) row.setAttribute('data-active', '')
+      var badge = document.createElement('span')
+      badge.className = 'rd-item-badge'
+      badge.textContent = ACTION_LABELS[result.action] || result.action
+      var main = document.createElement('span')
+      main.className = 'rd-item-main'
+      var excerpt = document.createElement('span')
+      excerpt.className = 'rd-item-excerpt'
+      var summary = (result.text || result.error || result.instruction || '').replace(/\s+/gu, ' ').trim()
+      if (summary === '') {
+        excerpt.textContent = result.parentId ? `基于 #${result.parentId} 的追加要求` : '（暂无内容）'
+        excerpt.setAttribute('data-empty', '')
+      } else {
+        excerpt.textContent = summary.length > 42 ? `${summary.slice(0, 42)}…` : summary
+      }
+      var meta = document.createElement('span')
+      meta.className = 'rd-item-meta'
+      meta.textContent = [timeLabel(result.createdAt), result.meta ? String(result.meta.model || '') : '', result.applied ? '已替换' : '']
+        .filter(Boolean).join(' · ')
+      main.appendChild(excerpt)
+      main.appendChild(meta)
+      var stateLabel = document.createElement('span')
+      stateLabel.className = 'rd-item-state'
+      applyRowState(stateLabel, result)
+      row.appendChild(badge)
+      row.appendChild(main)
+      row.appendChild(stateLabel)
+      row.addEventListener('click', (function (id) {
+        return function () { selectResult(id) }
+      })(result.id))
+      refs.historyList.appendChild(row)
+      state.rowMap.set(result.id, { row: row, excerpt: excerpt, meta: meta, stateLabel: stateLabel })
+    }
+    renderFilters()
+  }
+
+  function applyRowState(node, result) {
+    node.removeAttribute('data-running')
+    node.removeAttribute('data-error')
+    if (result.status === 'running') {
+      node.textContent = '…'
+      node.setAttribute('data-running', '')
+    } else if (result.status === 'error') {
+      node.textContent = '失败'
+      node.setAttribute('data-error', '')
+    } else {
+      node.textContent = result.applied ? '已替换' : '✓'
+    }
+  }
+
+  function updateHistoryRow(result) {
+    var row = state.rowMap.get(result.id)
+    if (!row) return
+    row.row.setAttribute('data-status', result.status)
+    if (result.id === state.selectedId) row.row.setAttribute('data-active', '')
+    else row.row.removeAttribute('data-active')
+    applyRowState(row.stateLabel, result)
+    var summary = (result.text || result.error || result.instruction || '').replace(/\s+/gu, ' ').trim()
+    if (summary === '') {
+      row.excerpt.textContent = result.parentId ? `基于 #${result.parentId} 的追加要求` : '（暂无内容）'
+      row.excerpt.setAttribute('data-empty', '')
+    } else {
+      row.excerpt.textContent = summary.length > 42 ? `${summary.slice(0, 42)}…` : summary
+      row.excerpt.removeAttribute('data-empty')
+    }
+    row.meta.textContent = [timeLabel(result.createdAt), result.meta ? String(result.meta.model || '') : '', result.applied ? '已替换' : '']
+      .filter(Boolean).join(' · ')
+  }
+
+  function selectResult(id) {
+    state.selectedId = id
+    renderHistory()
+    renderDetail(true)
+    var row = state.rowMap.get(id)
+    if (row && row.row.scrollIntoView) {
+      try { row.row.scrollIntoView({ block: 'nearest' }) } catch (error) { /* ignore */ }
+    }
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 详情
+   * ------------------------------------------------------------------ */
+
+  function selectedResult() {
+    return state.selectedId === null ? null : findResult(state.selectedId)
+  }
+
   function parentLabel(result) {
     if (!result.parentId) return ''
-    var parent = state.results.find(function (item) { return item.id === result.parentId })
+    var parent = findResult(result.parentId)
     return parent ? `基于 #${parent.id} 的追加要求` : `基于 #${result.parentId} 的追加要求`
   }
 
-  function createButton(label, handler, options) {
+  function toolButton(label, handler, options) {
     var button = document.createElement('button')
     button.type = 'button'
     button.textContent = label
     if (options && options.emphasis) button.setAttribute('data-emphasis', options.emphasis)
-    if (options && options.title) button.title = options.title
     button.addEventListener('click', handler)
     return button
   }
 
-  function insertResultCard(result) {
-    var container = refs.results
-    if (!container) return
-    removeEmpty()
-    var article = document.createElement('article')
-    article.className = 'rd-result'
-    article.setAttribute('data-id', String(result.id))
-    article.setAttribute('data-action', result.action)
-    article.setAttribute('data-status', result.status)
-
+  function buildDetail() {
+    var root = refs.detail
+    root.innerHTML = ''
     var head = document.createElement('header')
-    head.className = 'rd-result-head'
-    head.title = '点击展开 / 折叠'
+    head.className = 'rd-detail-head'
     var badge = document.createElement('span')
     badge.className = 'rd-badge'
-    badge.textContent = ACTION_LABELS[result.action] || result.action
     var provider = document.createElement('span')
     provider.className = 'rd-provider'
     var time = document.createElement('span')
     time.className = 'rd-time'
-    time.textContent = timeLabel(result.createdAt)
     var status = document.createElement('span')
     status.className = 'rd-state'
-    status.textContent = '进行中…'
     head.appendChild(badge)
     head.appendChild(provider)
     head.appendChild(time)
     head.appendChild(status)
-    head.addEventListener('click', function () {
-      result.collapsed = result.collapsed !== true
-      article.setAttribute('data-collapsed', result.collapsed ? '1' : '0')
-      saveHistory()
-    })
 
     var body = document.createElement('div')
-    body.className = 'rd-result-body'
+    body.className = 'rd-detail-body'
     var parent = document.createElement('p')
     parent.className = 'rd-parent'
-    parent.textContent = parentLabel(result)
     var text = document.createElement('div')
-    text.className = 'rd-result-text'
+    text.className = 'rd-detail-text'
     var warning = document.createElement('p')
     warning.className = 'rd-warn'
     var retry = document.createElement('div')
     retry.className = 'rd-retry'
     var refsList = document.createElement('ul')
     refsList.className = 'rd-refs'
+    var errorBlock = document.createElement('div')
+    errorBlock.className = 'rd-error-block'
+    var errorText = document.createElement('p')
+    var errorActions = document.createElement('div')
+    errorActions.className = 'rd-error-actions'
+    errorBlock.appendChild(errorText)
+    errorBlock.appendChild(errorActions)
     var revise = document.createElement('div')
     revise.className = 'rd-revise'
     var reviseInput = document.createElement('input')
     reviseInput.type = 'text'
     reviseInput.maxLength = 500
-    reviseInput.placeholder = '继续修改要求，例如：再压缩到 40 字、换成更口语的表达'
-    var reviseButton = createButton('执行', function () { submitRevise(result) })
+    reviseInput.placeholder = '继续修改要求，例如：再压缩到 40 字'
+    var reviseButton = toolButton('追加要求', function () { submitRevise() })
     revise.appendChild(reviseInput)
     revise.appendChild(reviseButton)
     reviseInput.addEventListener('keydown', function (event) {
       if (event.key === 'Enter') {
         event.preventDefault()
-        submitRevise(result)
+        submitRevise()
       }
     })
     body.appendChild(parent)
@@ -727,114 +905,119 @@
     body.appendChild(warning)
     body.appendChild(retry)
     body.appendChild(refsList)
+    body.appendChild(errorBlock)
     body.appendChild(revise)
 
     var tools = document.createElement('footer')
     tools.className = 'rd-tools'
-    var locate = createButton('定位回原文', function () { locateResult(result) })
-    var comment = createButton('插入批注', function () { insertComment(result) })
-    var replace = createButton('替换原文（修订）', function () { replaceOriginal(result) }, { emphasis: 'replace' })
-    var undo = createButton('撤销替换', function () { undoReplace(result) })
-    var reviseToggle = createButton('追加要求', function () {
-      var open = revise.getAttribute('data-open') === '1'
-      revise.setAttribute('data-open', open ? '0' : '1')
-      if (!open) reviseInput.focus()
-    })
-    var copy = createButton('复制', function () { copyResult(result) })
+    var locate = toolButton('定位回原文', function () { var result = selectedResult(); if (result) locateResult(result) })
+    var comment = toolButton('插入批注', function () { var result = selectedResult(); if (result) insertComment(result) })
+    var replace = toolButton('替换原文（修订）', function () { var result = selectedResult(); if (result) replaceOriginal(result) }, { emphasis: 'replace' })
+    var undo = toolButton('撤销替换', function () { var result = selectedResult(); if (result) undoReplace(result) })
+    var copy = toolButton('复制结果', function () { var result = selectedResult(); if (result) copyResult(result) })
     tools.appendChild(locate)
     tools.appendChild(comment)
     tools.appendChild(replace)
     tools.appendChild(undo)
-    tools.appendChild(reviseToggle)
     tools.appendChild(copy)
 
-    article.appendChild(head)
-    article.appendChild(body)
-    article.appendChild(tools)
-    if (result.collapsed === true) article.setAttribute('data-collapsed', '1')
-    if (container.firstChild) container.insertBefore(article, container.firstChild)
-    else container.appendChild(article)
+    root.appendChild(head)
+    root.appendChild(body)
+    root.appendChild(tools)
+    root.hidden = false
+    if (refs.detailEmpty) refs.detailEmpty.hidden = true
 
-    result.dom = {
-      article: article, badge: badge, provider: provider, time: time, status: status,
+    state.detailDom = {
+      root: root, badge: badge, provider: provider, time: time, status: status,
       parent: parent, text: text, warning: warning, retry: retry, refs: refsList,
-      revise: revise, reviseInput: reviseInput, toolbar: {
-        locate: locate, comment: comment, replace: replace, undo: undo, revise: reviseToggle, copy: copy,
-      },
+      errorBlock: errorBlock, errorText: errorText, errorActions: errorActions,
+      revise: revise, reviseInput: reviseInput,
+      tools: { locate: locate, comment: comment, replace: replace, undo: undo, copy: copy },
     }
-    updateResultCard(result)
-    applyFilter(result)
   }
 
-  function updateResultCard(result) {
-    var dom = result.dom
+  function renderDetail(force) {
+    var result = selectedResult()
+    if (result === null) {
+      if (refs.detail) refs.detail.hidden = true
+      if (refs.detailEmpty) refs.detailEmpty.hidden = false
+      state.detailDom = null
+      state.detailId = null
+      return
+    }
+    if (force || state.detailId !== result.id || state.detailDom === null) {
+      state.detailId = result.id
+      buildDetail()
+    }
+    updateDetail(result)
+  }
+
+  function updateDetail(result) {
+    var dom = state.detailDom
     if (!dom) return
-    var article = dom.article
-    article.setAttribute('data-status', result.status)
-    if (result.meta) {
-      var providerText = [result.meta.provider, result.meta.model].filter(Boolean).join(' / ')
-      if (result.meta.reasoningEffort) providerText += ` · ${result.meta.reasoningEffort}`
-      dom.provider.textContent = providerText
-    } else if (result.provider) {
-      dom.provider.textContent = result.provider
-    }
-    if (result.status === 'running') {
-      dom.status.textContent = result.stage || '进行中…'
-      dom.status.setAttribute('data-running', '')
-      dom.status.removeAttribute('data-error')
-    } else if (result.status === 'error') {
-      dom.status.textContent = '失败'
-      dom.status.removeAttribute('data-running')
-      dom.status.setAttribute('data-error', '')
-    } else {
-      dom.status.textContent = result.applied ? '已替换' : '完成'
-      dom.status.removeAttribute('data-running')
-      dom.status.removeAttribute('data-error')
-    }
+    dom.badge.textContent = ACTION_LABELS[result.action] || result.action
+    var providerText = []
+    if (result.meta) providerText = [result.meta.provider, result.meta.model].filter(Boolean)
+    if (result.meta && result.meta.reasoningEffort) providerText.push(result.meta.reasoningEffort)
+    dom.provider.textContent = providerText.join(' / ')
+    dom.time.textContent = timeLabel(result.createdAt)
+    dom.status.textContent = result.status === 'running'
+      ? (result.stage || '进行中…')
+      : result.status === 'error' ? '失败' : result.applied ? '已替换' : '完成'
+    dom.status.removeAttribute('data-running')
+    dom.status.removeAttribute('data-error')
+    if (result.status === 'running') dom.status.setAttribute('data-running', '')
+    if (result.status === 'error') dom.status.setAttribute('data-error', '')
     dom.parent.textContent = parentLabel(result)
     dom.parent.style.display = dom.parent.textContent === '' ? 'none' : ''
+
     if (result.status === 'error') {
-      dom.text.textContent = result.error || '审核失败'
-    } else if (result.status === 'running') {
-      dom.text.textContent = result.text
+      dom.text.textContent = ''
+      dom.text.style.display = 'none'
     } else {
-      dom.text.innerHTML = markdownLite(result.text)
+      dom.text.style.display = ''
+      if (result.status === 'running') dom.text.textContent = result.text
+      else dom.text.innerHTML = markdownLite(result.text)
     }
     dom.warning.textContent = result.warning || ''
     dom.warning.style.display = result.warning ? '' : 'none'
-    renderSources(dom.refs, result)
     renderRetry(dom.retry, result)
-    var hasBody = result.text.trim() !== '' || result.status === 'error'
-    dom.toolbar.comment.disabled = result.status !== 'done' || result.text.trim() === ''
-    dom.toolbar.replace.disabled = !hasBody || result.status === 'running'
-    dom.toolbar.replace.style.display = (result.action === 'expand' || result.action === 'custom') ? '' : 'none'
-    dom.toolbar.undo.style.display = result.applied ? '' : 'none'
-    dom.toolbar.undo.disabled = !result.applied
-    dom.toolbar.copy.disabled = result.status === 'running' && result.text === ''
-    dom.toolbar.revise.disabled = result.status !== 'done'
+    renderSources(dom.refs, result)
+
+    dom.errorBlock.style.display = result.status === 'error' ? '' : 'none'
+    if (result.status === 'error') {
+      dom.errorText.textContent = result.error || '审核失败'
+      dom.errorActions.innerHTML = ''
+      var retryButton = toolButton('重试', function () {
+        runAnalysis(result.action, { instruction: result.instruction, selection: result.selection })
+      })
+      var copyError = toolButton('复制错误信息', function () { copyText(result.error || '') })
+      dom.errorActions.appendChild(retryButton)
+      dom.errorActions.appendChild(copyError)
+    }
+
     dom.revise.style.display = result.status === 'done' ? '' : 'none'
-    dom.toolbar.locate.style.display = result.selection ? '' : 'none'
-    if (result.collapsed === true) article.setAttribute('data-collapsed', '1')
-    else article.removeAttribute('data-collapsed')
-    applyFilter(result)
+    var hasBody = result.text.trim() !== '' || result.status === 'error'
+    dom.tools.locate.disabled = !result.selection
+    dom.tools.comment.disabled = result.status !== 'done' || result.text.trim() === ''
+    dom.tools.replace.disabled = !hasBody || result.status === 'running'
+    dom.tools.replace.style.display = (result.action === 'expand' || result.action === 'custom') ? '' : 'none'
+    dom.tools.undo.style.display = result.applied ? '' : 'none'
+    dom.tools.undo.disabled = !result.applied
+    dom.tools.copy.disabled = result.status === 'running' && result.text === ''
+    if (result.collapsed) { /* no-op: history rows are always compact */ }
   }
 
   function renderRetry(container, result) {
     container.innerHTML = ''
     var truncated = (result.warning || '').indexOf('长度上限') >= 0
     if (!truncated || result.status === 'running') return
-    var button = createButton('提高输出上限重试', function () {
+    var button = toolButton('提高输出上限重试', function () {
       var current = result.maxTokens > 0 ? result.maxTokens : defaultCap(result.action)
       var next = Math.min(16000, Math.max(current + 4000, Math.round(current * 1.5)))
-      runAnalysis(result.action, {
-        instruction: result.instruction,
-        selection: result.selection,
-        maxTokens: next,
-        retryOf: result.id,
-      })
+      runAnalysis(result.action, { instruction: result.instruction, selection: result.selection, maxTokens: next })
       toast(`已提高上限到 ${next} tokens 重新执行`)
     })
-    button.className = 'rd-retry-button'
     container.appendChild(button)
   }
 
@@ -872,80 +1055,6 @@
     })
   }
 
-  function collapseAllExcept(keep) {
-    for (var result of state.results) {
-      if (result === keep) {
-        result.collapsed = false
-      } else if (result.status === 'done' && result.collapsed !== true) {
-        result.collapsed = true
-      }
-    }
-  }
-
-  function applyFilter(result) {
-    if (!result.dom) return
-    var visible = state.filter === 'all' || result.action === state.filter
-    result.dom.article.style.display = visible ? '' : 'none'
-  }
-
-  function renderFilters() {
-    if (!refs.filterTabs) return
-    var tabs = [{ key: 'all', label: '全部', count: state.results.length }]
-    for (var action of ACTION_ORDER) {
-      tabs.push({
-        key: action,
-        label: ACTION_LABELS[action],
-        count: state.results.filter(function (item) { return item.action === action }).length,
-      })
-    }
-    refs.filterTabs.innerHTML = ''
-    for (var tab of tabs) {
-      var button = document.createElement('button')
-      button.type = 'button'
-      button.className = 'rd-tab'
-      if (state.filter === tab.key) button.setAttribute('data-active', '')
-      button.textContent = `${tab.label}${tab.count > 0 ? ` ${tab.count}` : ''}`
-      button.addEventListener('click', (function (key) {
-        return function () {
-          state.filter = key
-          renderFilters()
-          for (var result of state.results) applyFilter(result)
-        }
-      })(tab.key))
-      refs.filterTabs.appendChild(button)
-    }
-    for (var result of state.results) applyFilter(result)
-  }
-
-  function removeEmpty() {
-    var empty = refs.results && refs.results.querySelector('.rd-empty')
-    if (empty) empty.remove()
-  }
-
-  function renderEmpty() {
-    if (!refs.results || refs.results.children.length > 0) return
-    var empty = document.createElement('p')
-    empty.className = 'rd-empty'
-    empty.textContent = '还没有结果。选中一段文字，从上面选一个动作开始。'
-    refs.results.appendChild(empty)
-  }
-
-  function renderAll() {
-    refs.results.innerHTML = ''
-    var ordered = state.results.slice().sort(function (a, b) { return b.createdAt - a.createdAt })
-    state.results = ordered
-    ordered.forEach(function (result, index) {
-      result.dom = null
-      result.collapsed = result.status === 'done' ? index > 0 : false
-    })
-    // 逐条插到最前面，倒序插入以保持「最新在最上」。
-    for (var index = ordered.length - 1; index >= 0; index -= 1) {
-      insertResultCard(ordered[index])
-    }
-    renderEmpty()
-    renderFilters()
-  }
-
   /* ------------------------------------------------------------------ *
    * 结果 → 文档
    * ------------------------------------------------------------------ */
@@ -981,6 +1090,19 @@
       return { error: '原文已变化（可能已被修改），请重新选中后再试' }
     }
     return { doc: doc, range: range }
+  }
+
+  function highlightRange(range) {
+    try {
+      var original = range.HighlightColorIndex
+      range.HighlightColorIndex = HIGHLIGHT_COLOR
+      setTimeout(function () {
+        try { range.HighlightColorIndex = Number(original) } catch (error) { /* ignore */ }
+      }, 1800)
+      return true
+    } catch (error) {
+      return false
+    }
   }
 
   function insertComment(result) {
@@ -1042,8 +1164,8 @@
       tracked: previous === 'true',
       appliedAt: Date.now(),
     }
-    if (result.dom) result.dom.article.setAttribute('data-status', 'done')
-    updateResultCard(result)
+    updateHistoryRow(result)
+    updateDetail(result)
     saveHistory()
     toast('已以修订形式替换，可在 WPS 中接受/拒绝')
     report({ kind: 'wps-replace', ok: true, chars: replacement.length, resultId: result.id })
@@ -1052,8 +1174,7 @@
   }
 
   /**
-   * 撤销一次替换：拒绝本次替换新增的修订，把原文还回去。
-   * 以「替换前的内容长度 / 上下文」做校验；失败时回退到直接写回并如实上报。
+   * 撤销一次替换：拒绝本次替换新增的修订并还原原文。
    * @returns {{ok: boolean, mode: string, rejected: number, debug: object, error?: string}}
    */
   function undoReplace(result) {
@@ -1067,8 +1188,8 @@
       debug.rangeInsertedText = String(doc.Range(record.start, record.end).Text).slice(0, 60)
       debug.rangePreviousText = String(doc.Range(record.start, record.start + record.previous.length).Text).slice(0, 60)
       debug.revisionsBefore = []
-      var count = doc.Revisions.Count
-      for (var probe = count; probe >= 1; probe -= 1) {
+      var probeCount = doc.Revisions.Count
+      for (var probe = probeCount; probe >= 1; probe -= 1) {
         try {
           var item = doc.Revisions.Item(probe)
           debug.revisionsBefore.push({
@@ -1078,7 +1199,7 @@
           })
         } catch (error) { /* ignore */ }
       }
-      debug.revisionCountBefore = count
+      debug.revisionCountBefore = probeCount
     } catch (error) {
       debug.probeError = String((error && error.message) || error)
     }
@@ -1090,7 +1211,6 @@
     try {
       delta = Math.max(0, Number(record.revisionCountAfter) - Number(record.revisionCountBefore))
       var countNow = doc.Revisions.Count
-      // 只处理本次替换新增的修订（最后 delta 个）；delta 不可用时按范围重叠兜底。
       for (var index = countNow; index >= 1; index -= 1) {
         var withinNew = delta > 0 ? index > countNow - delta : true
         if (!withinNew) continue
@@ -1134,8 +1254,8 @@
     debug.restored = restored
     if (restored) {
       result.applied = null
-      if (result.dom) result.dom.article.setAttribute('data-status', 'done')
-      updateResultCard(result)
+      updateHistoryRow(result)
+      updateDetail(result)
       saveHistory()
       toast(mode === 'direct' ? '已写回原文（未走修订）' : '已撤销替换（拒绝相关修订）')
       report({ kind: 'wps-undo-replace', ok: true, mode: mode, rejected: rejected, debug: debug })
@@ -1148,7 +1268,6 @@
     return { ok: restored, mode: mode, rejected: rejected, debug: debug }
   }
 
-  /** 校验撤销是否把文档恢复成替换前的样子。 */
   function verifyRestored(doc, record, debug) {
     try {
       var content = String(doc.Content.Text)
@@ -1173,16 +1292,17 @@
     try {
       var range = doc.Range(result.selection.start, result.selection.end)
       range.Select()
+      var highlighted = highlightRange(range)
       try {
         var app = getApp()
         if (app.ActiveWindow && typeof app.ActiveWindow.ScrollIntoView === 'function') {
           app.ActiveWindow.ScrollIntoView(range)
         }
       } catch (error) { /* scrolling is best-effort */ }
-      toast('已定位到原文')
+      toast(highlighted ? '已定位并高亮原文' : '已定位到原文')
       readSelection()
       renderSelection()
-      report({ kind: 'wps-locate', ok: true, resultId: result.id })
+      report({ kind: 'wps-locate', ok: true, highlighted: highlighted, resultId: result.id })
       return true
     } catch (error) {
       toast(`定位失败：${(error && error.message) || error}`)
@@ -1191,17 +1311,16 @@
     }
   }
 
-  function submitRevise(result) {
-    var dom = result.dom
-    if (!dom) return
-    var instruction = dom.reviseInput.value.trim()
+  function submitRevise() {
+    var result = selectedResult()
+    if (!result || !state.detailDom) return
+    var instruction = state.detailDom.reviseInput.value.trim()
     if (instruction === '') { toast('请先写追加要求'); return }
     if (result.status !== 'done') { toast('结果还没生成完'); return }
     var body = replacementBody(result.text) || stripMarkers(result.text)
     if (body === '') { toast('这条结果没有可继续修改的正文'); return }
     var original = result.original !== '' ? result.original : (result.selection ? result.selection.text : '')
-    dom.reviseInput.value = ''
-    dom.revise.setAttribute('data-open', '0')
+    state.detailDom.reviseInput.value = ''
     runAnalysis('custom', {
       instruction: instruction,
       revise: true,
@@ -1213,8 +1332,7 @@
   }
 
   function copyResult(result) {
-    var text = result.status === 'error' ? result.error : result.text
-    copyText(text)
+    copyText(result.status === 'error' ? result.error : result.text)
   }
 
   function copyText(text) {
@@ -1301,8 +1419,79 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * 快捷键
+   * ------------------------------------------------------------------ */
+
+  function shortcutExecute() {
+    var instruction = refs.instruction ? refs.instruction.value.trim() : ''
+    if (instruction !== '') {
+      runAnalysis('custom', { instruction: instruction })
+      return
+    }
+    var selected = selectedResult()
+    if (selected && selected.status === 'done') {
+      runAnalysis(selected.action, {
+        instruction: selected.instruction,
+        selection: selected.selection,
+      })
+      return
+    }
+    if (state.selection) {
+      runAnalysis('logic')
+      return
+    }
+    toast('请先选中文字，或在左侧选择一条历史结果')
+  }
+
+  function onKeydown(event) {
+    var meta = event.metaKey || event.ctrlKey
+    if (meta && event.key === 'Enter') {
+      event.preventDefault()
+      shortcutExecute()
+      return
+    }
+    if (meta && (event.key === 'k' || event.key === 'K')) {
+      event.preventDefault()
+      if (refs.search) {
+        refs.search.focus()
+        refs.search.select()
+      }
+      return
+    }
+    if (event.key === 'Escape') {
+      var active = document.activeElement
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'SELECT' || active.tagName === 'TEXTAREA')) {
+        active.blur()
+        if (refs.search && active === refs.search) {
+          refs.search.value = ''
+          state.search = ''
+          renderHistory()
+        }
+      }
+    }
+  }
+
+  /* ------------------------------------------------------------------ *
    * 验证钩子（只在 ?verify=1 时启用，用于开发验证）
    * ------------------------------------------------------------------ */
+
+  function layoutInfo() {
+    try {
+      var app = document.querySelector('.rd-app')
+      var side = document.querySelector('.rd-side')
+      var main = document.querySelector('.rd-main')
+      return {
+        innerWidth: window.innerWidth,
+        appDisplay: app ? window.getComputedStyle(app).display : '',
+        appDirection: app ? window.getComputedStyle(app).flexDirection : '',
+        sideWidth: side ? Math.round(side.getBoundingClientRect().width) : 0,
+        mainWidth: main ? Math.round(main.getBoundingClientRect().width) : 0,
+        historyCount: state.results.length,
+      }
+    } catch (error) {
+      return { error: String((error && error.message) || error) }
+    }
+  }
 
   function maybeSelfTest() {
     if (!VERIFY || selfTest.started) return
@@ -1327,6 +1516,7 @@
       selection: state.selection ? state.selection.text : '',
       hasCatalog: !!(state.catalog && state.catalog.providers),
       historyRestored: state.results.length,
+      layout: layoutInfo(),
     })
     runAnalysis('expand', {
       onSettled: function (result) {
@@ -1339,9 +1529,7 @@
           error: result.error,
         })
         if (result.status !== 'done') return
-        setTimeout(function () {
-          afterExpandWrite(result)
-        }, 400)
+        setTimeout(function () { afterExpandWrite(result) }, 400)
       },
     })
   }
@@ -1359,17 +1547,6 @@
         revisions: doc.Revisions.Count,
         applied: result.applied !== null,
         appliedLength: result.applied ? result.applied.inserted.length : 0,
-        contentLength: String(doc.Content.Text).length,
-        rangeText: result.applied ? String(doc.Range(result.applied.start, result.applied.end).Text).slice(0, 60) : '',
-        revisionRanges: [],
-      }
-      for (var probe = doc.Revisions.Count; probe >= 1; probe -= 1) {
-        var revision = doc.Revisions.Item(probe)
-        info.replace.revisionRanges.push({
-          start: Number(revision.Range.Start),
-          end: Number(revision.Range.End),
-          type: typeof revision.Type === 'number' ? revision.Type : -1,
-        })
       }
     } catch (error) {
       info.replace = { error: String((error && error.message) || error) }
@@ -1383,13 +1560,8 @@
     }
     info.undo = undoReplace(result)
     try { info.afterUndo = { comments: doc.Comments.Count, revisions: doc.Revisions.Count } } catch (error) { info.afterUndo = { error: String(error) } }
-    try {
-      info.history = { results: state.results.length, stored: !!localStorage.getItem(HISTORY_KEY) }
-    } catch (error) {
-      info.history = { error: String((error && error.message) || error) }
-    }
+    try { info.history = { results: state.results.length, stored: !!localStorage.getItem(HISTORY_KEY) } } catch (error) { info.history = { error: String(error) } }
     report({ kind: 'wps-selftest', stage: 'write', info: info })
-    // 追加要求链（第二次模型调用）
     setTimeout(function () {
       var revision = runAnalysis('custom', {
         instruction: '压缩到 40 字以内，保留关键信息',
@@ -1439,10 +1611,14 @@
       instruction: document.getElementById('instruction'),
       btnCustom: document.getElementById('btn-custom'),
       btnRefresh: document.getElementById('btn-refresh'),
-      results: document.getElementById('results'),
+      search: document.getElementById('search'),
       filterTabs: document.getElementById('filter-tabs'),
+      historyList: document.getElementById('history-list'),
       btnClear: document.getElementById('btn-clear'),
+      detail: document.getElementById('detail'),
+      detailEmpty: document.getElementById('detail-empty'),
       bridgeUrl: document.getElementById('bridge-url'),
+      bridgeToken: document.getElementById('bridge-token'),
       bridgeHint: document.getElementById('bridge-hint'),
       btnCheck: document.getElementById('btn-check'),
       toast: document.getElementById('toast'),
@@ -1461,7 +1637,9 @@
     }
     if (refs.bridgeUrl) refs.bridgeUrl.value = state.bridge
     state.settings = readSettings()
+    if (refs.bridgeToken) refs.bridgeToken.value = state.settings.token
     renderCapOptions()
+
     if (refs.settingModel) {
       refs.settingModel.addEventListener('change', function () {
         var value = refs.settingModel.value
@@ -1502,7 +1680,7 @@
     }
     if (refs.instruction) {
       refs.instruction.addEventListener('keydown', function (event) {
-        if (event.key === 'Enter') {
+        if (event.key === 'Enter' && !event.metaKey && !event.ctrlKey) {
           event.preventDefault()
           runAnalysis('custom', { instruction: refs.instruction.value.trim() })
         }
@@ -1515,6 +1693,13 @@
         toast(state.selection === null ? '没有选中文字' : `已选中 ${state.selection.text.length} 字`)
       })
     }
+    if (refs.search) {
+      refs.search.addEventListener('input', function () {
+        state.search = refs.search.value.trim()
+        renderHistory()
+      })
+    }
+    if (refs.btnClear) refs.btnClear.addEventListener('click', clearHistory)
     if (refs.bridgeUrl) {
       refs.bridgeUrl.addEventListener('change', function () {
         state.bridge = normalizeBridge(refs.bridgeUrl.value)
@@ -1523,17 +1708,20 @@
         checkBridge()
       })
     }
-    if (refs.btnCheck) refs.btnCheck.addEventListener('click', checkBridge)
-    if (refs.btnClear) refs.btnClear.addEventListener('click', clearHistory)
-
-    // 恢复历史
-    state.results = loadHistory()
-    if (state.results.length > 0) renderAll()
-    else renderEmpty()
-    renderFilters()
-    for (var result of state.results) {
-      if (result.applied) result.dom && updateResultCard(result)
+    if (refs.bridgeToken) {
+      refs.bridgeToken.addEventListener('change', function () {
+        state.settings.token = refs.bridgeToken.value.trim()
+        persistSettings()
+        checkBridge()
+      })
     }
+    if (refs.btnCheck) refs.btnCheck.addEventListener('click', checkBridge)
+    window.addEventListener('keydown', onKeydown)
+
+    state.results = loadHistory()
+    if (state.results.length > 0) state.selectedId = state.results[0].id
+    renderHistory()
+    renderDetail(true)
 
     renderSettingsSummary()
     checkBridge()
@@ -1547,12 +1735,13 @@
 
     report({
       kind: 'wps-taskpane',
-      version: '0.2',
+      version: '0.3',
       loaded: true,
       hasApp: !!getApp(),
       docName: state.docName,
       bridge: state.bridge,
       historyRestored: state.results.length,
+      layout: layoutInfo(),
       at: new Date().toISOString(),
     })
   }

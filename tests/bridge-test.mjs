@@ -7,11 +7,13 @@ import path from 'node:path'
 
 process.env.REVIEW_DESK_WPS_BRIDGE = '1'
 process.env.REVIEW_DESK_WPS_BRIDGE_PORT = '47839'
+process.env.REVIEW_DESK_WPS_TOKEN = 'test-token'
 
 const here = path.dirname(new URL(import.meta.url).pathname)
 const mod = await import(path.join(here, '..', 'index.js'))
 
 const BASE = 'http://127.0.0.1:47839'
+const AUTH = { 'x-review-desk-token': 'test-token' }
 
 const ctx = {
   effect(fn) {
@@ -79,14 +81,32 @@ async function health() {
 const info = await health()
 assert.equal(info.ok, true)
 assert.equal(info.service, 'review-desk-wps-bridge')
+assert.equal(info.auth, 'token')
 console.log('ok  health')
 
-const preflight = await fetch(`${BASE}/analyze`, { method: 'OPTIONS' })
+// A foreign browser origin cannot drive the bridge, even on loopback.
+const forbidden = await fetch(`${BASE}/health`, { headers: { origin: 'http://evil.example' } })
+assert.equal(forbidden.status, 403)
+console.log('ok  origin rejected')
+
+const allowedOrigin = await fetch(`${BASE}/health`, { headers: { origin: 'http://127.0.0.1:3889' } })
+assert.equal(allowedOrigin.status, 200)
+assert.equal(allowedOrigin.headers.get('access-control-allow-origin'), 'http://127.0.0.1:3889')
+console.log('ok  loopback origin reflected')
+
+const preflight = await fetch(`${BASE}/analyze`, {
+  method: 'OPTIONS',
+  headers: { origin: 'http://127.0.0.1:3889', 'access-control-request-headers': 'content-type,x-review-desk-token' },
+})
 assert.equal(preflight.status, 204)
-assert.equal(preflight.headers.get('access-control-allow-origin'), '*')
+assert.match(preflight.headers.get('access-control-allow-headers') ?? '', /x-review-desk-token/u)
 console.log('ok  cors preflight')
 
-const catalogResponse = await fetch(`${BASE}/models`)
+const withoutToken = await fetch(`${BASE}/models`)
+assert.equal(withoutToken.status, 401)
+console.log('ok  token required')
+
+const catalogResponse = await fetch(`${BASE}/models`, { headers: AUTH })
 assert.equal(catalogResponse.status, 200)
 const catalog = await catalogResponse.json()
 assert.equal(catalog.default.provider, 'deepseek')
@@ -99,7 +119,7 @@ console.log('ok  models catalog')
 
 const response = await fetch(`${BASE}/analyze`, {
   method: 'POST',
-  headers: { 'content-type': 'application/json' },
+  headers: { 'content-type': 'application/json', ...AUTH },
   body: JSON.stringify({ action: 'logic', text: '这是一段需要审核的文字。' }),
 })
 assert.equal(response.status, 200)
@@ -118,7 +138,7 @@ console.log('ok  analyze stream')
 
 const capped = await fetch(`${BASE}/analyze`, {
   method: 'POST',
-  headers: { 'content-type': 'application/json' },
+  headers: { 'content-type': 'application/json', ...AUTH },
   body: JSON.stringify({ action: 'expand', text: '一段需要扩写的文字。', maxTokens: 20_000 }),
 })
 assert.equal(capped.status, 200)
@@ -127,7 +147,7 @@ console.log('ok  output cap override')
 
 const invalid = await fetch(`${BASE}/analyze`, {
   method: 'POST',
-  headers: { 'content-type': 'application/json' },
+  headers: { 'content-type': 'application/json', ...AUTH },
   body: JSON.stringify({ action: 'unknown', text: 'x' }),
 })
 assert.equal(invalid.status, 400)
@@ -135,7 +155,7 @@ const problem = await invalid.json()
 assert.ok(typeof problem.error === 'string' && problem.error !== '')
 console.log('ok  invalid payload')
 
-assert.equal((await fetch(`${BASE}/nope`)).status, 404)
+assert.equal((await fetch(`${BASE}/nope`, { headers: AUTH })).status, 404)
 console.log('ok  unknown route')
 
 console.log('\nall bridge checks passed')

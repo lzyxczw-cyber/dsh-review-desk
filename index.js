@@ -17,6 +17,7 @@
  */
 
 import http from 'node:http'
+import { timingSafeEqual } from 'node:crypto'
 
 
 /** Authenticated route this half owns on the shared `/api` channel. */
@@ -41,6 +42,28 @@ const WPS_BRIDGE = {
   maxBodyBytes: 4 * 1024 * 1024,
   timeoutMs: 180_000,
   enabled: process.env.REVIEW_DESK_WPS_BRIDGE !== '0',
+  /** Optional shared token; when set, `/models` and `/analyze` require it. */
+  token: (process.env.REVIEW_DESK_WPS_TOKEN ?? '').trim(),
+}
+
+/**
+ * Browser origins allowed to call the bridge: the local dev server, packaged
+ * `file://` pages, or non-browser clients (no Origin header).
+ */
+function isAllowedBridgeOrigin(origin) {
+  if (typeof origin !== 'string' || origin === '') return true
+  if (origin === 'null') return true
+  return /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/u.test(origin)
+}
+
+/** Constant-time comparison for the optional bridge token. */
+function bridgeTokenMatches(request) {
+  if (WPS_BRIDGE.token === '') return true
+  const provided = request.headers['x-review-desk-token']
+  if (typeof provided !== 'string' || provided === '') return false
+  const left = Buffer.from(provided)
+  const right = Buffer.from(WPS_BRIDGE.token)
+  return left.length === right.length && timingSafeEqual(left, right)
 }
 
 /** Operations the panel and the tool expose. `custom` runs a free-form requirement. */
@@ -767,11 +790,18 @@ async function readModelCatalog(ctx) {
 function startWpsBridge(ctx) {
   if (!WPS_BRIDGE.enabled) return null
   const server = http.createServer(async (request, response) => {
+    const origin = request.headers.origin ?? ''
+    if (!isAllowedBridgeOrigin(origin)) {
+      response.writeHead(403, { 'content-type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ error: 'origin not allowed' }))
+      return
+    }
     const headers = {
-      'access-control-allow-origin': '*',
+      'access-control-allow-origin': origin || '*',
       'access-control-allow-methods': 'GET,POST,OPTIONS',
-      'access-control-allow-headers': 'content-type',
+      'access-control-allow-headers': 'content-type,x-review-desk-token',
       'cache-control': 'no-store',
+      vary: 'origin',
     }
     if (request.method === 'OPTIONS') {
       response.writeHead(204, headers)
@@ -781,7 +811,17 @@ function startWpsBridge(ctx) {
     const url = new URL(request.url ?? '/', `http://127.0.0.1:${WPS_BRIDGE.port}`)
     if (request.method === 'GET' && url.pathname === '/health') {
       response.writeHead(200, { ...headers, 'content-type': 'application/json; charset=utf-8' })
-      response.end(JSON.stringify({ ok: true, service: 'review-desk-wps-bridge', bridge: '1' }))
+      response.end(JSON.stringify({
+        ok: true,
+        service: 'review-desk-wps-bridge',
+        bridge: '1',
+        auth: WPS_BRIDGE.token === '' ? 'open' : 'token',
+      }))
+      return
+    }
+    if (!bridgeTokenMatches(request)) {
+      response.writeHead(401, { ...headers, 'content-type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ error: '需要访问令牌：请在面板「连接设置」里填写 REVIEW_DESK_WPS_TOKEN。' }))
       return
     }
     if (request.method === 'GET' && url.pathname === '/models') {

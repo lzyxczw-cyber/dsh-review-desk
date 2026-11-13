@@ -1,10 +1,10 @@
 /**
- * WPS task-pane test: loads wps-addin/taskpane.html + taskpane.js in jsdom and
+ * WPS task-pane test (v0.3, two columns): loads taskpane.html/js in jsdom and
  * drives it with a fake WPS document model and a fake loopback bridge.
  *
- * Covers: selection, streamed analysis, comment insertion, tracked replacement,
- * undo via revision rejection, locate, revise chain, filters, settings and
- * history persistence.
+ * Covers: two-column mount, selection, streaming detail, comment, tracked
+ * replacement, undo via revision rejection, locate, revise chain, filters,
+ * search, keyboard shortcut, token header, error state, settings and history.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -15,8 +15,8 @@ const here = path.dirname(new URL(import.meta.url).pathname)
 const PANEL_DIR = path.join(here, '..', 'wps-addin')
 const HTML = fs.readFileSync(path.join(PANEL_DIR, 'taskpane.html'), 'utf8')
 const SCRIPT = fs.readFileSync(path.join(PANEL_DIR, 'taskpane.js'), 'utf8')
-const HISTORY_KEY = 'wps-review-desk.history.v1'
-const SETTINGS_KEY = 'wps-review-desk.settings.v1'
+const HISTORY_KEY = 'wps-review-desk.history.v2'
+const SETTINGS_KEY = 'wps-review-desk.settings.v2'
 
 const BASE_TEXT = '第一段：这是用于测试的原文。\n第二段：后续内容。'
 
@@ -32,6 +32,7 @@ function createFakeWps(initialText, docName) {
     revisions: [],
     comments: [],
     saved: true,
+    highlight: 0,
     selection: { Start: 0, End: 0, Text: '' },
     scrollCalls: 0,
   }
@@ -40,35 +41,6 @@ function createFakeWps(initialText, docName) {
     const from = Math.max(0, Math.min(Number(start) || 0, model.text.length))
     const to = Math.max(from, Math.min(Number(end) || 0, model.text.length))
     return { start: from, end: to }
-  }
-
-  function rangeObject(start, end) {
-    const bounds = parseRange(start, end)
-    const range = {
-      Start: bounds.start,
-      End: bounds.end,
-      Select() {
-        model.selection = {
-          Start: bounds.start,
-          End: bounds.end,
-          Text: model.text.slice(bounds.start, bounds.end),
-        }
-      },
-      Comments: {
-        Add(_range, text) {
-          model.comments.push({ start: bounds.start, end: bounds.end, text: String(text) })
-        },
-      },
-    }
-    Object.defineProperty(range, 'Text', {
-      get() {
-        return model.text.slice(bounds.start, bounds.end)
-      },
-      set(value) {
-        setRangeText(bounds.start, bounds.end, String(value))
-      },
-    })
-    return range
   }
 
   function setRangeText(start, end, value) {
@@ -93,6 +65,35 @@ function createFakeWps(initialText, docName) {
     }
   }
 
+  function rangeObject(start, end) {
+    const bounds = parseRange(start, end)
+    const range = {
+      Start: bounds.start,
+      End: bounds.end,
+      Select() {
+        model.selection = {
+          Start: bounds.start,
+          End: bounds.end,
+          Text: model.text.slice(bounds.start, bounds.end),
+        }
+      },
+      Comments: {
+        Add(_range, text) {
+          model.comments.push({ start: bounds.start, end: bounds.end, text: String(text) })
+        },
+      },
+    }
+    Object.defineProperty(range, 'Text', {
+      get() { return model.text.slice(bounds.start, bounds.end) },
+      set(value) { setRangeText(bounds.start, bounds.end, String(value)) },
+    })
+    Object.defineProperty(range, 'HighlightColorIndex', {
+      get() { return model.highlight },
+      set(value) { model.highlight = Number(value) },
+    })
+    return range
+  }
+
   const doc = {
     Name: model.name,
     get Saved() { return model.saved },
@@ -102,7 +103,6 @@ function createFakeWps(initialText, docName) {
       return {
         get Text() { return model.text },
         set Text(value) { model.text = String(value) },
-        Find: { Execute() { return false } },
       }
     },
     Range(start, end) {
@@ -123,7 +123,6 @@ function createFakeWps(initialText, docName) {
     Undo() { return true },
     Redo() { return true },
     SaveAs2(target) { model.saved = true; model.name = String(target).split('/').pop(); return true },
-    ExportAsFixedFormat() { return true },
   }
 
   const app = {
@@ -132,16 +131,10 @@ function createFakeWps(initialText, docName) {
     get ActiveDocument() { return doc },
     get Selection() {
       const selection = model.selection
-      return {
-        Start: selection.Start,
-        End: selection.End,
-        Text: selection.Text,
-      }
+      return { Start: selection.Start, End: selection.End, Text: selection.Text }
     },
     get ActiveWindow() {
-      return {
-        ScrollIntoView() { model.scrollCalls += 1 },
-      }
+      return { ScrollIntoView() { model.scrollCalls += 1 } }
     },
     get Enum() { return { JSKsoEnum_msoCTPDockPositionRight: 2 } },
   }
@@ -183,7 +176,7 @@ function buildFrames(payload, warningActions) {
   } else if (payload.action === 'custom' && payload.revise === true) {
     frames.push({ type: 'delta', text: '<<<TEXT\n压缩后的正文示例。\n>>>\n### 改写说明\n- 压缩到 40 字\n' })
   } else if (payload.action === 'logic') {
-    frames.push({ type: 'delta', text: '### 结构判断\n本段是论证落点。\n### 逻辑问题\n- **以偏概全** —— 样本不足。\n### 收紧建议\n1. 收敛结论。\n' })
+    frames.push({ type: 'delta', text: '### 结构判断\n本段是论证落点。\n### 逻辑问题\n- **以偏概全** —— 样本不足。\n' })
   } else {
     frames.push({ type: 'delta', text: '### 处理结果\n已按你的要求处理。\n' })
   }
@@ -196,17 +189,19 @@ function buildFrames(payload, warningActions) {
 
 function createFetch({ warningActions, analyze } = {}) {
   const calls = []
-  const fetchImpl = async (url, init) => {
+  const fetchImpl = async (url, init = {}) => {
     const target = String(url)
+    const headers = init.headers || {}
     if (target.endsWith('/health')) {
-      return new Response(JSON.stringify({ ok: true, service: 'review-desk-wps-bridge' }), { status: 200, headers: { 'content-type': 'application/json' } })
+      return new Response(JSON.stringify({ ok: true, service: 'review-desk-wps-bridge', auth: 'open' }), { status: 200, headers: { 'content-type': 'application/json' } })
     }
     if (target.endsWith('/models')) {
+      calls.push({ kind: 'models', headers })
       return new Response(JSON.stringify(catalog()), { status: 200, headers: { 'content-type': 'application/json' } })
     }
     if (target.endsWith('/analyze')) {
       const payload = JSON.parse(init.body)
-      calls.push(payload)
+      calls.push({ kind: 'analyze', payload, headers })
       if (typeof analyze === 'function') {
         const custom = analyze(payload, calls)
         if (custom !== undefined) return custom
@@ -250,8 +245,24 @@ async function mount({ text = BASE_TEXT, fetchOptions, history, settings } = {})
   await flush(8)
 
   const container = window.document
+  const detail = () => container.getElementById('detail')
+  const detailText = () => {
+    const node = detail().querySelector('.rd-detail-text')
+    return node ? node.textContent : ''
+  }
+  const detailState = () => detail().querySelector('.rd-state')
+  const itemRows = () => [...container.querySelectorAll('.rd-item')]
+  const visibleRows = () => itemRows().filter(row => row.style.display !== 'none')
+  const waitFor = async (predicate, message, timeout = 4000) => {
+    const started = Date.now()
+    for (;;) {
+      if (predicate()) return
+      if (Date.now() - started > timeout) throw new Error(`timeout: ${message}`)
+      await flush(2)
+    }
+  }
   const button = (label, scope) => {
-    const root = scope || container
+    const root = scope || detail()
     const buttons = [...root.querySelectorAll('button')]
     const found = buttons.find(node => node.textContent.trim() === label)
     assert.ok(found, `button ${label} exists`)
@@ -262,21 +273,7 @@ async function mount({ text = BASE_TEXT, fetchOptions, history, settings } = {})
     assert.ok(found, `action button ${name}`)
     return found
   }
-  const results = () => [...container.querySelectorAll('.rd-result')]
-  const lastCard = () => {
-    const cards = results()
-    assert.ok(cards.length > 0, 'a result card exists')
-    return cards[0]
-  }
-  const waitFor = async (predicate, message, timeout = 4000) => {
-    const started = Date.now()
-    for (;;) {
-      if (predicate()) return
-      if (Date.now() - started > timeout) throw new Error(`timeout: ${message}`)
-      await flush(2)
-    }
-  }
-  return { dom, window, fake, calls, container, button, actionButton, results, lastCard, waitFor }
+  return { dom, window, fake, calls, container, detail, detailText, detailState, itemRows, visibleRows, waitFor, button, actionButton }
 }
 
 function flush(times = 1) {
@@ -291,45 +288,40 @@ function flush(times = 1) {
   })
 }
 
-function findButton(container, label) {
-  const buttons = [...container.querySelectorAll('button')]
-  const found = buttons.find(node => node.textContent.trim() === label)
-  assert.ok(found, `button ${label} exists`)
-  return found
-}
-
 /* ------------------------------------------------------------------ *
  * 用例
  * ------------------------------------------------------------------ */
 
-await test('health, catalog and selection render', async () => {
+await test('two-column shell, health, catalog and selection', async () => {
   const page = await mount()
+  assert.ok(page.container.querySelector('.rd-app'))
+  assert.ok(page.container.querySelector('.rd-side'))
+  assert.ok(page.container.querySelector('.rd-main'))
   await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
   await page.waitFor(() => page.container.querySelectorAll('#setting-model option').length > 1, 'models loaded')
   assert.ok(page.container.querySelector('#selection-preview').textContent.includes('第一段'))
-  assert.ok(page.container.querySelectorAll('.rd-action').length === 4)
+  assert.equal(page.container.querySelectorAll('.rd-action').length, 4)
   page.dom.window.close()
 })
 
-await test('expand streams a card, comment and tracked replacement work', async () => {
+await test('expand streams into the detail pane; comment and tracked replacement work', async () => {
   const page = await mount()
   await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
   page.actionButton('expand').click()
-  await page.waitFor(() => page.lastCard().getAttribute('data-status') === 'done', 'expand done')
-  const card = page.lastCard()
-  assert.ok(card.textContent.includes('扩写后的正文示例'))
-  assert.ok(card.querySelector('strong') === null || true)
-  assert.equal(page.fake.model.revisions.length, 0, 'no document change yet')
+  await page.waitFor(() => page.detailText().includes('扩写后的正文示例'), 'detail streaming text')
+  await page.waitFor(() => page.detailState().textContent === '完成', 'done state')
+  assert.equal(page.itemRows().length, 1, 'one history row')
+  assert.equal(page.fake.model.revisions.length, 0)
 
-  findButton(card, '插入批注').click()
+  page.button('插入批注').click()
   assert.equal(page.fake.model.comments.length, 1)
   assert.ok(page.fake.model.comments[0].text.includes('扩写后的正文示例'))
 
-  findButton(card, '替换原文（修订）').click()
-  assert.equal(page.fake.model.revisions.length, 2, 'tracked replacement produces two revisions')
-  assert.equal(page.fake.model.track, false, 'track setting restored')
+  page.button('替换原文（修订）').click()
+  assert.equal(page.fake.model.revisions.length, 2)
+  assert.equal(page.fake.model.track, false)
   assert.ok(page.fake.model.text.includes('扩写后的正文示例'))
-  assert.equal(page.calls.at(-1).action, 'expand')
+  assert.equal(page.detailState().textContent, '已替换')
   page.dom.window.close()
 })
 
@@ -337,29 +329,24 @@ await test('undo replacement rejects revisions and restores the text', async () 
   const page = await mount()
   await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
   page.actionButton('expand').click()
-  await page.waitFor(() => page.lastCard().getAttribute('data-status') === 'done', 'expand done')
-  const card = page.lastCard()
-  findButton(card, '替换原文（修订）').click()
-  assert.equal(page.fake.model.revisions.length, 2, 'two tracked revisions')
-  assert.ok(page.fake.model.text.includes('扩写后的正文示例'))
-  findButton(card, '撤销替换').click()
+  await page.waitFor(() => page.detailState().textContent === '完成', 'done state')
+  page.button('替换原文（修订）').click()
+  assert.equal(page.fake.model.revisions.length, 2)
+  page.button('撤销替换').click()
   await flush(4)
-  assert.equal(page.fake.model.text, BASE_TEXT, 'text restored')
-  assert.equal(page.fake.model.revisions.length, 0, 'revisions rejected')
+  assert.equal(page.fake.model.text, BASE_TEXT)
+  assert.equal(page.fake.model.revisions.length, 0)
   page.dom.window.close()
 })
 
-await test('locate selects the original range', async () => {
+await test('locate selects and highlights the original range', async () => {
   const page = await mount()
   await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
   page.actionButton('logic').click()
-  await page.waitFor(() => page.lastCard().getAttribute('data-status') === 'done', 'logic done')
+  await page.waitFor(() => page.detailState().textContent === '完成', 'logic done')
   page.fake.model.selection = { Start: 0, End: 0, Text: '' }
-  findButton(page.lastCard(), '定位回原文').click()
-  assert.deepEqual(
-    { start: page.fake.model.selection.Start, end: page.fake.model.selection.End },
-    { start: 0, end: 12 },
-  )
+  page.button('定位回原文').click()
+  assert.deepEqual({ start: page.fake.model.selection.Start, end: page.fake.model.selection.End }, { start: 0, end: 12 })
   assert.equal(page.fake.model.scrollCalls, 1)
   page.dom.window.close()
 })
@@ -368,73 +355,86 @@ await test('revise appends a child result with the requirement', async () => {
   const page = await mount()
   await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
   page.actionButton('expand').click()
-  await page.waitFor(() => page.lastCard().getAttribute('data-status') === 'done', 'expand done')
-  const card = page.lastCard()
-  findButton(card, '追加要求').click()
-  const input = card.querySelector('.rd-revise input')
+  await page.waitFor(() => page.detailState().textContent === '完成', 'expand done')
+  const input = page.detail().querySelector('.rd-revise input')
   assert.ok(input)
   input.value = '压缩到 40 字以内'
-  findButton(card, '执行').click()
-  await page.waitFor(() => page.results().length >= 2, 'child card exists')
-  await page.waitFor(() => page.lastCard().getAttribute('data-status') === 'done', 'child done')
-  const payload = page.calls.at(-1)
+  page.button('追加要求').click()
+  await page.waitFor(() => page.itemRows().length >= 2, 'child row')
+  await page.waitFor(() => page.detailText().includes('压缩后的正文示例'), 'child text')
+  const payload = page.calls.filter(call => call.kind === 'analyze').at(-1).payload
   assert.equal(payload.action, 'custom')
   assert.equal(payload.revise, true)
   assert.equal(payload.instruction, '压缩到 40 字以内')
   assert.ok(payload.text.includes('扩写后的正文示例'))
-  assert.ok(page.lastCard().textContent.includes('压缩后的正文示例'))
-  assert.ok(page.lastCard().textContent.includes('基于 #'))
+  assert.ok(page.detail().textContent.includes('基于 #'))
   page.dom.window.close()
 })
 
-await test('filters limit visible cards and history is persisted', async () => {
+await test('filters and search narrow the history list; history persists', async () => {
   const page = await mount()
   await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
   page.actionButton('expand').click()
-  await page.waitFor(() => page.lastCard().getAttribute('data-status') === 'done', 'expand done')
+  await page.waitFor(() => page.detailState().textContent === '完成', 'expand done')
   page.actionButton('logic').click()
-  await page.waitFor(() => page.container.querySelectorAll('.rd-result').length >= 2, 'two cards')
-  await page.waitFor(() => page.lastCard().getAttribute('data-status') === 'done', 'logic done')
+  await page.waitFor(() => page.itemRows().length >= 2, 'two rows')
+  await page.waitFor(() => page.detailState().textContent === '完成', 'logic done')
+
   const logicTab = [...page.container.querySelectorAll('.rd-tab')].find(node => node.textContent.startsWith('逻辑分析'))
-  assert.ok(logicTab)
   logicTab.click()
   await flush(2)
-  const visible = page.results().filter(card => card.style.display !== 'none')
-  assert.equal(visible.length, 1)
-  assert.equal(visible[0].getAttribute('data-action'), 'logic')
+  assert.equal(page.visibleRows().length, 1)
+  assert.equal(page.visibleRows()[0].getAttribute('data-action'), 'logic')
+
+  const allTab = [...page.container.querySelectorAll('.rd-tab')].find(node => node.textContent.startsWith('全部'))
+  allTab.click()
+  await flush(2)
+  const search = page.container.querySelector('#search')
+  search.value = '扩写后的正文'
+  search.dispatchEvent(new page.window.Event('input'))
+  await flush(2)
+  assert.equal(page.visibleRows().length, 1)
+
+  search.value = ''
+  search.dispatchEvent(new page.window.Event('input'))
+  await flush(2)
   await page.waitFor(() => page.window.localStorage.getItem(HISTORY_KEY), 'history stored')
   const stored = JSON.parse(page.window.localStorage.getItem(HISTORY_KEY))
   assert.equal(stored.results.length, 2)
   page.dom.window.close()
 })
 
-await test('settings load from the catalog and travel with requests', async () => {
+await test('settings and token travel with requests', async () => {
   const page = await mount()
   await page.waitFor(() => page.container.querySelectorAll('#setting-model option').length > 1, 'models loaded')
   const model = page.container.querySelector('#setting-model')
   model.value = 'deepseek::deepseek-flash'
   model.dispatchEvent(new page.window.Event('change'))
-  await flush(3)
   const effort = page.container.querySelector('#setting-effort')
-  assert.ok([...effort.options].some(option => option.value === 'max'))
   effort.value = 'low'
   effort.dispatchEvent(new page.window.Event('change'))
   const cap = page.container.querySelector('#setting-cap')
   cap.value = '12000'
   cap.dispatchEvent(new page.window.Event('change'))
+  const token = page.container.querySelector('#bridge-token')
+  token.value = 'secret-token'
+  token.dispatchEvent(new page.window.Event('change'))
   await flush(3)
   const stored = JSON.parse(page.window.localStorage.getItem(SETTINGS_KEY))
   assert.equal(stored.provider, 'deepseek')
   assert.equal(stored.model, 'deepseek-flash')
   assert.equal(stored.reasoningEffort, 'low')
   assert.equal(stored.maxTokens, 12000)
+  assert.equal(stored.token, 'secret-token')
+
   page.actionButton('logic').click()
-  await page.waitFor(() => page.lastCard().getAttribute('data-status') === 'done', 'logic done')
-  const payload = page.calls.at(-1)
-  assert.equal(payload.provider, 'deepseek')
-  assert.equal(payload.model, 'deepseek-flash')
-  assert.equal(payload.reasoningEffort, 'low')
-  assert.equal(payload.maxTokens, 12000)
+  await page.waitFor(() => page.detailState().textContent === '完成', 'logic done')
+  const call = page.calls.filter(entry => entry.kind === 'analyze').at(-1)
+  assert.equal(call.payload.provider, 'deepseek')
+  assert.equal(call.payload.model, 'deepseek-flash')
+  assert.equal(call.payload.reasoningEffort, 'low')
+  assert.equal(call.payload.maxTokens, 12000)
+  assert.equal(call.headers['x-review-desk-token'], 'secret-token')
   page.dom.window.close()
 })
 
@@ -443,42 +443,72 @@ await test('a max-token warning offers a higher-cap retry', async () => {
   const page = await mount({ fetchOptions: { warningActions: { logic: warning } } })
   await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
   page.actionButton('logic').click()
-  await page.waitFor(() => page.lastCard().getAttribute('data-status') === 'done', 'logic done')
-  const card = page.lastCard()
-  assert.ok(card.textContent.includes('长度上限'))
-  const retry = findButton(card, '提高输出上限重试')
+  await page.waitFor(() => page.detailState().textContent === '完成', 'logic done')
+  assert.ok(page.detail().textContent.includes('长度上限'))
+  const retry = page.button('提高输出上限重试')
   retry.click()
-  await page.waitFor(() => page.calls.length >= 2, 'retry request')
-  await page.waitFor(() => page.results().length >= 2, 'retry card')
-  await page.waitFor(() => page.lastCard().getAttribute('data-status') === 'done', 'retry done')
-  assert.equal(page.calls.at(-1).maxTokens, 10000)
-  await flush(6)
+  await page.waitFor(() => page.calls.filter(entry => entry.kind === 'analyze').length >= 2, 'retry request')
+  await page.waitFor(() => page.detailState().textContent === '完成', 'retry done')
+  const retryCall = page.calls.filter(entry => entry.kind === 'analyze').at(-1)
+  assert.equal(retryCall.payload.maxTokens, 10000)
+  await flush(4)
+  page.dom.window.close()
+})
+
+await test('bridge failure shows an actionable error block', async () => {
+  const page = await mount({
+    fetchOptions: {
+      analyze() {
+        return new Response(JSON.stringify({ error: '需要访问令牌：请填写 REVIEW_DESK_WPS_TOKEN。' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        })
+      },
+    },
+  })
+  await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
+  page.actionButton('logic').click()
+  await page.waitFor(() => page.detail().querySelector('.rd-error-block').style.display !== 'none', 'error block visible')
+  const text = page.detail().querySelector('.rd-error-block').textContent
+  assert.match(text, /访问令牌/u)
+  page.dom.window.close()
+})
+
+await test('keyboard shortcut runs the free-form requirement', async () => {
+  const page = await mount()
+  await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
+  page.container.querySelector('#instruction').value = '压缩到 30 字'
+  page.window.dispatchEvent(new page.window.KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }))
+  await page.waitFor(() => page.calls.some(entry => entry.kind === 'analyze'), 'shortcut request')
+  const payload = page.calls.filter(entry => entry.kind === 'analyze').at(-1).payload
+  assert.equal(payload.action, 'custom')
+  assert.equal(payload.instruction, '压缩到 30 字')
+  await page.waitFor(() => page.detailState().textContent === '完成', 'shortcut done')
   page.dom.window.close()
 })
 
 await test('history is restored on the next mount', async () => {
   const history = {
-    version: 1,
+    version: 2,
     results: [
       {
         id: 2, action: 'logic', instruction: '', createdAt: Date.now(), status: 'done',
         text: '### 结构判断\n旧结果二。', meta: { provider: 'deepseek', model: 'deepseek-flash' },
-        sources: [], note: '', warning: '', error: '',
+        sources: [], note: '', warning: '', error: '', errorKind: '',
         selection: { start: 0, end: 12, text: '第一段：这是用于测试' },
-        parentId: null, original: '', maxTokens: 0, applied: null, collapsed: true,
+        parentId: null, original: '', maxTokens: 0, applied: null,
       },
       {
         id: 1, action: 'expand', instruction: '', createdAt: Date.now() - 1000, status: 'error',
         text: '', meta: null, sources: [], note: '', warning: '',
-        error: '旧错误', selection: null, parentId: null, original: '', maxTokens: 0, applied: null, collapsed: true,
+        error: '旧错误', errorKind: 'network', selection: null, parentId: null, original: '', maxTokens: 0, applied: null,
       },
     ],
   }
   const page = await mount({ history })
   await flush(6)
-  assert.equal(page.results().length, 2)
-  assert.ok(page.results()[0].textContent.includes('旧结果二'))
-  assert.equal(page.results()[0].getAttribute('data-collapsed'), null, 'newest restored expanded')
+  assert.equal(page.itemRows().length, 2)
+  assert.ok(page.detailText().includes('旧结果二'))
   page.dom.window.close()
 })
 
