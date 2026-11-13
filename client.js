@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({
     /** Id shared by the sidebar entry and the main panel it opens. */
     const PANEL_ID = 'review-desk'
     /** Build tag, surfaced in the page attribute and the console. */
-    const BUILD = '2026-11-13.11-engine.1'
+    const BUILD = '2026-11-13.12-engine.2'
     /** Engine branch: replacements are confirmed in a local dialog, never applied silently. */
     const CONFIRM_REPLACE = true
     /** Locale namespace owned by this plugin. */
@@ -1274,7 +1274,7 @@ window.__ModuleLoader__.load({
       return actions
         .slice()
         .reverse()
-        .map((action, index) => `inset 0 -${(index + 1) * 2}px 0 var(--rd-act-${action})`)
+        .map((action, index) => `inset 0 -${index * 2 + 1}px 0 var(--rd-act-${action})`)
         .join(', ')
     }
 
@@ -1282,9 +1282,9 @@ window.__ModuleLoader__.load({
     function markStyle(mark) {
       const actions = markActions(mark)
       const style = { boxShadow: markShadow(mark) }
-      if (actions.length > 0) {
-        style.background = `color-mix(in srgb, var(--rd-act-${actions[actions.length - 1]}) 12%, transparent)`
-      }
+      style.background = actions.length === 1
+        ? `color-mix(in srgb, var(--rd-act-${actions[0]}) 11%, transparent)`
+        : 'color-mix(in srgb, var(--dsw-alias-label-primary) 6%, transparent)'
       return style
     }
 
@@ -2534,11 +2534,11 @@ window.__ModuleLoader__.load({
 
     const CSS = `
 .rd-page {
-  --rd-act-source: #2f6fed;
-  --rd-act-logic: #8b5cf6;
-  --rd-act-expand: #0f9d58;
-  --rd-act-relate: #d97706;
-  --rd-act-custom: #64748b;
+  --rd-act-source: #1d6ff2;
+  --rd-act-logic: #9333ea;
+  --rd-act-expand: #0d9f6e;
+  --rd-act-relate: #e2530b;
+  --rd-act-custom: #6b7280;
   --rd-inset: clamp(20px, 2.4vw, 32px);
   --rd-col-pad: clamp(14px, 1.4vw, 20px);
   --rd-radius-card: 14px;
@@ -2872,7 +2872,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
 }
 .rd-highlights-inner .rd-mark {
   border-radius: 4px;
-  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent);
   box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent);
 }
 
@@ -2907,6 +2907,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
   margin-right: 5px;
   border-radius: 50%;
   vertical-align: 1px;
+  box-shadow: 0 0 0 0.5px color-mix(in srgb, #000 14%, transparent);
 }
 .rd-tab .rd-act-dot { width: 5px; height: 5px; margin-right: 4px; }
 
@@ -2992,7 +2993,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
 }
 .rd-md-preview .rd-mark {
   border-radius: 4px;
-  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, transparent);
   box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent);
   cursor: pointer;
 }
