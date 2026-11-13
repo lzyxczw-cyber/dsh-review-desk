@@ -67,13 +67,22 @@ git clone https://github.com/lzyxczw-cyber/dsh-review-desk.git
 | --- | --- | --- |
 | **`main`** | 稳定版：Markdown 文本模型、就地编辑、分色划线、审核包、docx/pdf 导入 | 日常使用，市场索引指向这里 |
 | **`engine`** | 实验版：接入 SuperDoc，导入 `.docx` 后用真实 Word 版式展示；替换会先确认，确认后写回 docx，并可导出带修改的 `.docx` | 试用中，未合并（见 `docs/ENGINE.md`） |
+| **`wps`** | 实验版：WPS 文字加载项（任务窗格审稿面板）+ 本机回环桥；在 WPS 里选中文字直接审核，结果以批注 / 修订写回真 `.docx` | 试用中，未合并（见 `wps-addin/README.md`、`docs/WPS.md`） |
 
 切换分支后**刷新一次页面**（Host 会热重载，前端需要重新拉取客户端脚本）：
 
 ```sh
 git checkout engine   # 试用引擎版
 git checkout main     # 回到稳定版
+git checkout wps      # 试用 WPS 加载项（Host 会启动 127.0.0.1:47831 桥接）
 ```
+
+### WPS 加载项（`wps` 分支）
+
+`wps` 分支在 Host 半额外启动一个**仅回环监听**的 NDJSON 桥（默认 `127.0.0.1:47831`），
+供 WPS 任务窗格复用同一套 `analyze()`（提示词 / 默认模型 / web 检索）；加载项源码在
+[`wps-addin/`](wps-addin/README.md)，配合 `wpsjs debug` 即可在 WPS 文字里调试。
+
 
 ## 使用
 

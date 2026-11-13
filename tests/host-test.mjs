@@ -6,6 +6,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import assert from 'node:assert/strict'
 
+// The WPS bridge is covered by bridge-test.mjs; keep this suite free of sockets.
+process.env.REVIEW_DESK_WPS_BRIDGE = '0'
+
 const here = path.dirname(new URL(import.meta.url).pathname)
 const mod = await import(path.join(here, '..', 'index.js'))
 

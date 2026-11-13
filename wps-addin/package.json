@@ -1,0 +1,8 @@
+{
+  "name": "wps-review-desk",
+  "addonType": "wps",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Review desk task pane for WPS Writer: AI manuscript review with tracked-change write-back and comments.",
+  "scripts": {}
+}

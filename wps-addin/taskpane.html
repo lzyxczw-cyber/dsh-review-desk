@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Review Desk · WPS</title>
+  <link rel="stylesheet" href="./taskpane.css" />
+</head>
+<body>
+  <header class="rd-head">
+    <div class="rd-title-row">
+      <span id="conn-dot" class="rd-dot" title="后端连接状态"></span>
+      <h1>文稿审核台</h1>
+      <span id="doc-name" class="rd-doc-name" title="当前文档"></span>
+    </div>
+    <p class="rd-sub">选中文字 → 审核 → 批注 / 修订替换</p>
+  </header>
+
+  <section class="rd-card">
+    <div class="rd-row">
+      <span class="rd-label">当前选区</span>
+      <button id="btn-refresh" class="rd-mini" type="button">刷新</button>
+    </div>
+    <div id="selection-preview" class="rd-selection">尚未选中文字</div>
+    <div id="selection-meta" class="rd-meta-line"></div>
+  </section>
+
+  <section class="rd-actions" id="actions">
+    <div class="rd-grid">
+      <button type="button" class="rd-action" data-action="source">来源查证</button>
+      <button type="button" class="rd-action" data-action="logic">逻辑分析</button>
+      <button type="button" class="rd-action" data-action="expand">扩写</button>
+      <button type="button" class="rd-action" data-action="relate">关联分析</button>
+    </div>
+    <div class="rd-custom">
+      <input id="instruction" type="text" maxlength="500" placeholder="自由要求，例如：压缩到 60 字、换成汇报口径" />
+      <button id="btn-custom" type="button" class="rd-primary">执行要求</button>
+    </div>
+  </section>
+
+  <section class="rd-results" id="results"></section>
+
+  <footer class="rd-foot">
+    <details>
+      <summary>连接设置</summary>
+      <div class="rd-bridge-row">
+        <input id="bridge-url" type="text" spellcheck="false" />
+        <button id="btn-check" type="button" class="rd-mini">检测</button>
+      </div>
+      <p id="bridge-hint" class="rd-hint">默认连接本机 DSH 的文稿审核桥（127.0.0.1:47831）。</p>
+    </details>
+    <p class="rd-hint">替换以 WPS「修订」形式写入，可接受 / 拒绝，或用 ⌘Z 撤销；批注写入文档后可直接编辑。</p>
+  </footer>
+
+  <div id="toast" class="rd-toast" role="status" aria-live="polite"></div>
+
+  <script src="./taskpane.js"></script>
+</body>
+</html>

@@ -10,7 +10,14 @@
  * Source verification asks the configured web provider for evidence first and
  * hands the numbered sources to the model, so the answer cites material it was
  * actually given instead of recalled links.
+ *
+ * The `wps` branch also starts a loopback-only NDJSON bridge for the WPS
+ * add-in task pane (see `wps-addin/`); set `REVIEW_DESK_WPS_BRIDGE=0` to
+ * disable it or `REVIEW_DESK_WPS_BRIDGE_PORT` to change its port.
  */
+
+import http from 'node:http'
+
 
 /** Authenticated route this half owns on the shared `/api` channel. */
 const ROUTE_PATH = '/api/review-desk/analyze'
@@ -26,6 +33,14 @@ const PAGE_RENDER = {
   maxBytes: 6 * 1024 * 1024,
   sourceBytes: 30 * 1024 * 1024,
   timeoutMs: 90_000,
+}
+
+/** Loopback bridge that lets the WPS add-in (`wps-addin/`) reuse this host. */
+const WPS_BRIDGE = {
+  port: Number.parseInt(process.env.REVIEW_DESK_WPS_BRIDGE_PORT ?? '', 10) || 47_831,
+  maxBodyBytes: 4 * 1024 * 1024,
+  timeoutMs: 180_000,
+  enabled: process.env.REVIEW_DESK_WPS_BRIDGE !== '0',
 }
 
 /** Operations the panel and the tool expose. `custom` runs a free-form requirement. */
@@ -677,8 +692,110 @@ async function handlePagesRequest(ctx, request) {
   }
 }
 
+/**
+ * Serve the WPS add-in the same NDJSON review stream as the authenticated
+ * route, over loopback only: the add-in runs in WPS, outside the DSH origin,
+ * so it cannot use the owner-authenticated `/api` channel.
+ */
+function startWpsBridge(ctx) {
+  if (!WPS_BRIDGE.enabled) return null
+  const server = http.createServer(async (request, response) => {
+    const headers = {
+      'access-control-allow-origin': '*',
+      'access-control-allow-methods': 'GET,POST,OPTIONS',
+      'access-control-allow-headers': 'content-type',
+      'cache-control': 'no-store',
+    }
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204, headers)
+      response.end()
+      return
+    }
+    const url = new URL(request.url ?? '/', `http://127.0.0.1:${WPS_BRIDGE.port}`)
+    if (request.method === 'GET' && url.pathname === '/health') {
+      response.writeHead(200, { ...headers, 'content-type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ ok: true, service: 'review-desk-wps-bridge', bridge: '1' }))
+      return
+    }
+    if (request.method !== 'POST' || url.pathname !== '/analyze') {
+      response.writeHead(404, { ...headers, 'content-type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ error: 'not found' }))
+      return
+    }
+    let raw
+    try {
+      const chunks = []
+      let size = 0
+      for await (const chunk of request) {
+        size += chunk.length
+        if (size > WPS_BRIDGE.maxBodyBytes) throw new Error('请求体过大。')
+        chunks.push(chunk)
+      }
+      raw = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    } catch (error) {
+      response.writeHead(400, { ...headers, 'content-type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ error: messageOf(error) }))
+      return
+    }
+    let payload
+    try {
+      payload = readPayload(raw)
+    } catch (error) {
+      response.writeHead(400, { ...headers, 'content-type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ error: messageOf(error) }))
+      return
+    }
+    const controller = new AbortController()
+    const timeout = AbortSignal.timeout(WPS_BRIDGE.timeoutMs)
+    const signal = AbortSignal.any([controller.signal, timeout])
+    response.writeHead(200, {
+      ...headers,
+      'content-type': 'application/x-ndjson; charset=utf-8',
+      'transfer-encoding': 'chunked',
+    })
+    const emit = (frame) => {
+      if (response.writableEnded) return
+      try { response.write(`${JSON.stringify(frame)}\n`) } catch { /* client left */ }
+    }
+    request.on('close', () => {
+      if (!response.writableEnded) controller.abort()
+    })
+    try {
+      await analyze(ctx, payload, signal, emit)
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        emit({
+          type: 'error',
+          message: timeout.aborted
+            ? '本次审核超时（3 分钟），请缩短选中文字后重试。'
+            : messageOf(error),
+        })
+      }
+    } finally {
+      if (!response.writableEnded) response.end()
+    }
+  })
+  server.on('error', (error) => {
+    console.warn(`[review-desk] WPS bridge unavailable: ${messageOf(error)}`)
+  })
+  server.listen(WPS_BRIDGE.port, '127.0.0.1', () => {
+    console.info(`[review-desk] WPS bridge on http://127.0.0.1:${WPS_BRIDGE.port}`)
+  })
+  return server
+}
+
 /** Register the routes and the agent tool on a context that has the model services. */
 function install(ctx) {
+  ctx.effect(
+    () => {
+      const bridge = startWpsBridge(ctx)
+      return () => {
+        try { bridge?.close() } catch { /* already closed */ }
+      }
+    },
+    'review-desk: WPS bridge',
+  )
+
   ctx.effect(
     () => ctx.connection.fetch.register({
       path: ROUTE_PATH,

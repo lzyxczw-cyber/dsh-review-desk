@@ -6,7 +6,7 @@
   "description": "Behavioural checks for the Review Desk DSH plugin.",
   "scripts": {
     "test": "npm run test:host && npm run test:client",
-    "test:host": "node host-test.mjs",
+    "test:host": "node host-test.mjs && node bridge-test.mjs",
     "test:client": "node client-test.mjs"
   },
   "dependencies": {
