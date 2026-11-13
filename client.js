@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({
     /** Id shared by the sidebar entry and the main panel it opens. */
     const PANEL_ID = 'review-desk'
     /** Build tag, surfaced in the page attribute and the console. */
-    const BUILD = '2026-11-13.13-engine.3'
+    const BUILD = '2026-11-13.14-engine.4'
     /** Engine branch: replacements are confirmed in a local dialog, never applied silently. */
     const CONFIRM_REPLACE = true
     /** Locale namespace owned by this plugin. */
@@ -3887,30 +3887,49 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
       return { start, end: start + wanted.length }
     }
 
-    /** Highlight reviewed ranges inside the engine's rendered document. */
-    function paintEngineMarks(host, marks, markTitle) {
+    /**
+     * Highlight reviewed ranges inside the engine's rendered document. Rebuilt
+     * from scratch on every call, so a replacement or a new result repaints
+     * instead of leaving stale ranges behind.
+     */
+    function paintEngineMarks(host, marks) {
       if (typeof CSS === 'undefined' || CSS.highlights === undefined || typeof Highlight !== 'function') return
-      const groups = new Map()
+      for (const action of Object.keys(ACTION_COLORS)) CSS.highlights.delete(`rd-${action}`)
       const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT)
       const nodes = []
-      while (walker.nextNode() !== null) nodes.push(walker.currentNode)
-      for (const [index, mark] of marks.entries()) {
-        const needle = mark.text
-        for (const node of nodes) {
-          const at = node.nodeValue === null ? -1 : node.nodeValue.indexOf(needle)
-          if (at < 0) continue
-          const range = document.createRange()
-          range.setStart(node, at)
-          range.setEnd(node, at + needle.length)
-          const actions = mark.runs.map(run => run.action).filter(action => ACTION_COLORS[action] !== undefined)
-          for (const action of new Set(actions)) {
-            const list = groups.get(action) ?? []
-            list.push(range)
-            groups.set(action, list)
-          }
-          break
+      let size = 0
+      while (walker.nextNode() !== null) {
+        const node = walker.currentNode
+        const text = node.nodeValue ?? ''
+        if (text === '') continue
+        nodes.push({ node, start: size, end: size + text.length })
+        size += text.length
+      }
+      if (nodes.length === 0) return
+      const flat = nodes.map(entry => entry.node.nodeValue ?? '').join('')
+      const locate = (offset) => {
+        for (const entry of nodes) {
+          if (offset >= entry.start && offset <= entry.end) return { node: entry.node, at: offset - entry.start }
         }
-        void index
+        return null
+      }
+      const groups = new Map()
+      for (const mark of marks) {
+        const needle = mark.text
+        if (needle === '') continue
+        const from = flat.indexOf(needle)
+        if (from < 0) continue
+        const start = locate(from)
+        const end = locate(from + needle.length)
+        if (start === null || end === null) continue
+        const range = document.createRange()
+        range.setStart(start.node, start.at)
+        range.setEnd(end.node, end.at)
+        for (const action of new Set(mark.runs.map(run => run.action).filter(action => ACTION_COLORS[action]))) {
+          const list = groups.get(action) ?? []
+          list.push(range)
+          groups.set(action, list)
+        }
       }
       for (const [action, ranges] of groups) {
         CSS.highlights.set(`rd-${action}`, new Highlight(...ranges))
@@ -3918,11 +3937,14 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
     }
 
     /** The DOCX engine surface: read-only layout, marks, selection back to the text model. */
-    function DocEngine({ file, t, marks, onSelect, onFail, onInstance }) {
+    function DocEngine({ file, t, marks, revision, onSelect, onFail, onInstance }) {
       const hostRef = useRef(null)
       const [failed, setFailed] = useState('')
+      const [ready, setReady] = useState(false)
       const callbacks = useRef({ onFail, onInstance })
       callbacks.current = { onFail, onInstance }
+      const latestMarks = useRef(marks)
+      latestMarks.current = marks
       useEffect(() => {
         let instance = null
         let disposed = false
@@ -3939,7 +3961,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
                 document: file,
                 documentMode: 'viewing',
                 onReady: () => {
-                  paintEngineMarks(host, marks, () => '')
+                  setReady(true)
                   callbacks.current.onInstance?.(instance)
                 },
               })
@@ -3957,7 +3979,15 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
           callbacks.current.onInstance?.(null)
           try { instance?.destroy?.() } catch { /* teardown is best effort */ }
         }
-      }, [file, marks])
+      }, [file])
+
+      // Repaint after every result or replacement; never remount for a repaint.
+      useEffect(() => {
+        if (!ready) return
+        const host = hostRef.current
+        if (host === null) return
+        paintEngineMarks(host, latestMarks.current)
+      }, [marks, ready, revision])
 
       return h('div', { className: 'rd-doc-engine' },
         failed === ''
@@ -4375,6 +4405,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
       const [pendingPackage, setPendingPackage] = useState(null)
       const [pendingReplace, setPendingReplace] = useState(null)
       const [engineReady, setEngineReady] = useState(false)
+      const [markRevision, setMarkRevision] = useState(0)
       const superdocRef = useRef(null)
       const [highlight, setHighlight] = useState({ ids: [], nonce: 0 })
       const [frozen, setFrozen] = useState(null)
@@ -4965,6 +4996,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
         showNotice(t('replaceApplied'))
         if (oldText !== '' && superdocRef.current !== null) {
           void syncEngineReplace(oldText, pending.body).then((ok) => {
+            setMarkRevision(value => value + 1)
             if (!ok) showNotice(t('engineSyncFailed'))
           })
         }
@@ -5520,6 +5552,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
                           file: original.file,
                           t,
                           marks,
+                          revision: markRevision,
                           onSelect: (selected) => {
                             const found = locatePassage(snapshot.text, selected)
                             if (found === null) return
