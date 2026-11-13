@@ -1,0 +1,3 @@
+- insert:
+    - id: review-desk
+      name: '@local/review-desk'

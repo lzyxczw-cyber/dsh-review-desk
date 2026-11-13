@@ -1,0 +1,52 @@
+{
+  "name": "@local/review-desk",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Manuscript review desk for DeepSeek Harness: a three-column workspace that runs source checks, logic review, expansion, connection analysis, and free-form rewrites on a selected passage, keeps every result, and imports .docx/.pdf with their structure.",
+  "license": "MIT",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg"
+  ],
+  "scripts": {
+    "test": "cd tests && npm install --no-audit --no-fund && node host-test.mjs && node client-test.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "manuscript",
+    "review",
+    "docx",
+    "pdf"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lzyxczw-cyber/dsh-review-desk.git"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  }
+}

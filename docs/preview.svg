@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="300" viewBox="0 0 640 300" role="img" aria-label="Review desk: manuscript, review actions, and results in three columns">
+  <defs>
+    <linearGradient id="rd-canvas" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F7F9FC"/>
+      <stop offset="1" stop-color="#EDF1F9"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="640" height="300" rx="16" fill="url(#rd-canvas)"/>
+
+  <!-- Column separators -->
+  <rect x="306" y="36" width="1" height="228" fill="#E2E7F0"/>
+  <rect x="458" y="36" width="1" height="228" fill="#E2E7F0"/>
+
+  <!-- Column 1: manuscript -->
+  <rect x="28" y="36" width="262" height="228" rx="12" fill="#FFFFFF" stroke="#E2E7F0" stroke-width="1"/>
+  <rect x="46" y="56" width="128" height="10" rx="5" fill="#BFC8D8"/>
+  <rect x="46" y="76" width="82" height="6" rx="3" fill="#DCE2EC"/>
+
+  <rect x="40" y="98" width="238" height="18" rx="4" fill="#E3ECFF"/>
+  <rect x="46" y="103" width="188" height="7" rx="3.5" fill="#93B4F2"/>
+  <rect x="46" y="128" width="220" height="6" rx="3" fill="#DCE2EC"/>
+  <rect x="46" y="142" width="228" height="6" rx="3" fill="#DCE2EC"/>
+  <rect x="46" y="156" width="164" height="6" rx="3" fill="#DCE2EC"/>
+  <rect x="46" y="178" width="212" height="6" rx="3" fill="#E4E9F1"/>
+  <rect x="46" y="192" width="188" height="6" rx="3" fill="#E4E9F1"/>
+  <rect x="46" y="206" width="136" height="6" rx="3" fill="#E8ECF3"/>
+
+  <rect x="34" y="96" width="3" height="22" rx="1.5" fill="#2C58D8"/>
+  <rect x="280" y="96" width="3" height="22" rx="1.5" fill="#2C58D8"/>
+
+  <!-- Column 2: review actions -->
+  <rect x="320" y="36" width="126" height="150" rx="11" fill="#FFFFFF" stroke="#E2E7F0" stroke-width="1"/>
+  <g fill="#CFDDF7">
+    <circle cx="336" cy="58" r="6"/>
+    <circle cx="336" cy="88" r="6"/>
+    <circle cx="336" cy="118" r="6"/>
+    <circle cx="336" cy="148" r="6"/>
+  </g>
+  <g fill="#C4CEDD">
+    <rect x="350" y="54" width="58" height="7" rx="3.5"/>
+    <rect x="350" y="84" width="66" height="7" rx="3.5"/>
+    <rect x="350" y="114" width="52" height="7" rx="3.5"/>
+    <rect x="350" y="144" width="62" height="7" rx="3.5"/>
+  </g>
+  <g fill="#E4E9F1">
+    <rect x="350" y="66" width="76" height="5" rx="2.5"/>
+    <rect x="350" y="96" width="70" height="5" rx="2.5"/>
+    <rect x="350" y="126" width="78" height="5" rx="2.5"/>
+    <rect x="350" y="156" width="64" height="5" rx="2.5"/>
+  </g>
+  <g fill="#EAEEF5">
+    <rect x="320" y="95" width="126" height="1"/>
+    <rect x="320" y="125" width="126" height="1"/>
+    <rect x="320" y="155" width="126" height="1"/>
+  </g>
+
+  <rect x="320" y="196" width="126" height="68" rx="10" fill="#FFFFFF" stroke="#E2E7F0" stroke-width="1"/>
+  <rect x="330" y="206" width="48" height="6" rx="3" fill="#C4CEDD"/>
+  <rect x="330" y="218" width="106" height="26" rx="6" fill="#F4F6FA"/>
+  <rect x="336" y="228" width="64" height="5" rx="2.5" fill="#DCE2EC"/>
+  <rect x="330" y="250" width="64" height="8" rx="4" fill="#2C58D8" opacity="0.85"/>
+
+  <!-- Column 3: results -->
+  <rect x="470" y="36" width="142" height="104" rx="11" fill="#FFFFFF" stroke="#E2E7F0" stroke-width="1"/>
+  <circle cx="486" cy="55" r="5" fill="#2C58D8"/>
+  <rect x="498" y="51" width="52" height="8" rx="4" fill="#C3CCDB"/>
+  <rect x="484" y="72" width="116" height="6" rx="3" fill="#DCE2EC"/>
+  <rect x="484" y="86" width="96" height="6" rx="3" fill="#DCE2EC"/>
+  <rect x="484" y="106" width="58" height="16" rx="8" fill="#EEF3FB" stroke="#DEE5F0" stroke-width="1"/>
+  <rect x="492" y="112" width="40" height="4" rx="2" fill="#B7C4D8"/>
+  <rect x="548" y="106" width="52" height="16" rx="8" fill="#EEF3FB" stroke="#DEE5F0" stroke-width="1"/>
+  <rect x="556" y="112" width="36" height="4" rx="2" fill="#B7C4D8"/>
+
+  <rect x="470" y="152" width="142" height="62" rx="11" fill="#FFFFFF" stroke="#E2E7F0" stroke-width="1"/>
+  <circle cx="486" cy="171" r="5" fill="#CFE0FB"/>
+  <rect x="498" y="167" width="44" height="8" rx="4" fill="#C3CCDB"/>
+  <rect x="484" y="186" width="112" height="6" rx="3" fill="#DCE2EC"/>
+  <rect x="484" y="198" width="72" height="6" rx="3" fill="#E4E9F1"/>
+
+  <rect x="470" y="226" width="142" height="38" rx="11" fill="#FFFFFF" stroke="#E2E7F0" stroke-width="1"/>
+  <circle cx="486" cy="245" r="5" fill="#CFE0FB"/>
+  <rect x="498" y="241" width="60" height="8" rx="4" fill="#D4DBE7"/>
+</svg>
