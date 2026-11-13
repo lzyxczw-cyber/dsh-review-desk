@@ -42,7 +42,7 @@ function dictionaries() {
 const { ZH } = dictionaries()
 
 /** Instantiate one fresh module so each case starts from its own store. */
-function mount({ seed, fetchImpl, catalog = DEFAULT_CATALOG, widths } = {}) {
+function mount({ seed, fetchImpl, catalog = DEFAULT_CATALOG, widths, mode = 'source' } = {}) {
   if (fetchImpl !== undefined) {
     globalThis.fetch = fetchImpl
     window.fetch = fetchImpl
@@ -99,6 +99,14 @@ function mount({ seed, fetchImpl, catalog = DEFAULT_CATALOG, widths } = {}) {
       await act(async () => {
         root.render(React.createElement(registry['main'].Component, { t, remote }))
       })
+      await flush(4)
+      await setModeOn(container, mode)
+    },
+    /** Load the built-in sample, then return to the mode this test drives. */
+    loadSample: async () => {
+      click(queryAll(container, '.rd-empty-actions .rd-button')[0])
+      await flush(2)
+      await setModeOn(container, mode)
     },
     unmount: async () => {
       await act(async () => { root.unmount() })
@@ -247,13 +255,19 @@ async function importFile(page, name, bytes) {
 
 
 /** Switch the manuscript column between its editor and its rendered preview. */
-async function setMode(page, mode) {
-  const index = mode === 'preview' ? 1 : 0
-  const segments = queryAll(page.container, '.rd-segment')
-  if (segments.length > 0 && segments[index].getAttribute('data-active') === null) {
+const MODE_INDEX = { edit: 0, source: 1, preview: 2 }
+
+async function setModeOn(container, mode) {
+  const index = MODE_INDEX[mode] ?? 0
+  const segments = queryAll(container, '.rd-segment')
+  if (segments.length > 0 && segments[index] !== undefined && segments[index].getAttribute('data-active') === null) {
     click(segments[index])
     await flush()
   }
+}
+
+async function setMode(page, mode) {
+  await setModeOn(page.container, mode)
 }
 
 
@@ -327,8 +341,7 @@ await test('sample loads, selection enables actions, logic result streams in', a
     ]),
   })
   await page.render()
-  click(queryAll(page.container, '.rd-empty-actions .rd-button')[0])
-  await flush()
+  await page.loadSample()
   const field = page.container.querySelector('textarea.rd-text')
   assert.ok(field, 'manuscript field appears')
   assert.ok(field.value.includes('科技金融'), 'sample text loaded')
@@ -377,8 +390,7 @@ await test('source result renders numbered references', async () => {
     ]),
   })
   await page.render()
-  click(queryAll(page.container, '.rd-empty-actions .rd-button')[0])
-  await flush()
+  await page.loadSample()
   const field = page.container.querySelector('textarea.rd-text')
   field.selectionStart = 0
   field.selectionEnd = 24
@@ -405,8 +417,7 @@ await test('expansion offers a replacement and applies it to the manuscript', as
     ]),
   })
   await page.render()
-  click(queryAll(page.container, '.rd-empty-actions .rd-button')[0])
-  await flush()
+  await page.loadSample()
   const field = page.container.querySelector('textarea.rd-text')
   const start = field.value.indexOf('从实践效果看')
   const end = field.value.indexOf('同时也要看到')
@@ -442,8 +453,7 @@ await test('a failed run reports a mapped error and can retry', async () => {
   window.fetch = fetchImpl
   const page = mount({ fetchImpl })
   await page.render()
-  click(queryAll(page.container, '.rd-empty-actions .rd-button')[0])
-  await flush()
+  await page.loadSample()
   const field = page.container.querySelector('textarea.rd-text')
   field.selectionStart = 0
   field.selectionEnd = 10
@@ -466,8 +476,7 @@ await test('keyboard shortcut starts a review for the selection', async () => {
   window.fetch = globalThis.fetch
   const page = mount()
   await page.render()
-  click(queryAll(page.container, '.rd-empty-actions .rd-button')[0])
-  await flush()
+  await page.loadSample()
   const field = page.container.querySelector('textarea.rd-text')
   field.selectionStart = 0
   field.selectionEnd = 30
@@ -502,8 +511,7 @@ await test('timing: a running card shows its stage before text arrives', async (
   window.fetch = globalThis.fetch
   const page = mount()
   await page.render()
-  click(queryAll(page.container, '.rd-empty-actions .rd-button')[0])
-  await flush()
+  await page.loadSample()
   const field = page.container.querySelector('textarea.rd-text')
   field.selectionStart = 0
   field.selectionEnd = 12
@@ -550,7 +558,7 @@ await test('imports a .docx package into the manuscript', async () => {
   assert.ok(preview, 'imports render straight into the preview')
   assert.ok(preview.textContent.includes('第一段：这是从 Word 导入的文稿。'), preview.textContent)
   assert.equal(page.container.querySelector('input.rd-doc-title').value, '季度工作报告')
-  await setMode(page, 'edit')
+  await setMode(page, 'source')
   const field = page.container.querySelector('textarea.rd-text')
   assert.ok(field.value.includes('\n\n第二段'), 'paragraphs kept apart in the source')
   await page.unmount()
@@ -563,7 +571,7 @@ await test('imports the text layer of a .pdf', async () => {
   const preview = page.container.querySelector('.rd-preview')
   assert.ok(preview, 'the imported PDF opens in the preview')
   assert.ok(preview.textContent.includes('This is the imported PDF passage.'), preview.textContent)
-  await setMode(page, 'edit')
+  await setMode(page, 'source')
   assert.ok(page.container.querySelector('textarea.rd-text').value.includes('This is the imported PDF passage.'))
   await page.unmount()
 })
@@ -589,8 +597,7 @@ await test('a reviewed passage is marked in the manuscript and can be located', 
     ]),
   })
   await page.render()
-  click(queryAll(page.container, '.rd-empty-actions .rd-button')[0])
-  await flush()
+  await page.loadSample()
   const field = page.container.querySelector('textarea.rd-text')
   const start = field.value.indexOf('科技金融的本质')
   const end = field.value.indexOf('从实践效果看')
@@ -687,8 +694,8 @@ await test('preview renders markup and maps a preview selection back to source o
   const page = mount({ seed: { title: '预览', text: source, runs: [] } })
   await page.render()
   const toggle = queryAll(page.container, '.rd-segment')
-  assert.equal(toggle[1].textContent, '预览')
-  click(toggle[1])
+  assert.equal(toggle[2].textContent, '预览')
+  click(toggle[2])
   await flush()
   const preview = page.container.querySelector('.rd-md-preview')
   assert.ok(preview, 'rendered preview appears')
@@ -730,8 +737,7 @@ await test('a typed requirement runs the custom action', async () => {
     }),
   })
   await page.render()
-  click(queryAll(page.container, '.rd-empty-actions .rd-button')[0])
-  await flush()
+  await page.loadSample()
   const field = page.container.querySelector('textarea.rd-text')
   field.selectionStart = 0
   field.selectionEnd = 20
@@ -856,7 +862,7 @@ await test('an imported .docx keeps headings, bold, lists, and tables', async ()
   ].join('')
   await importFile(page, '制度.docx', buildDocxBody(body))
   assert.ok(page.container.querySelector('.rd-preview'), 'document imported')
-  await setMode(page, 'edit')
+  await setMode(page, 'source')
   const field = page.container.querySelector('textarea.rd-text')
   assert.ok(field, 'editor reachable after import')
   assert.ok(field.value.includes('# 第一章 总则'), field.value)
@@ -1284,6 +1290,7 @@ await test('importing a package replaces the session after confirmation', async 
   await flush(6)
 
   assert.equal(page.container.querySelector('input.rd-doc-title').value, '从另一台电脑带来')
+  await setMode(page, 'source')
   assert.ok(page.container.querySelector('textarea.rd-text').value.includes('新文稿第一段。'))
   assert.equal(queryAll(page.container, '.rd-card').length, 1, 'results came with the package')
   assert.equal(page.container.querySelector('#rd-instruction').value, '保持书面语气')
@@ -1368,6 +1375,99 @@ await test('clicking a reviewed passage in the editor reveals its results too', 
   await act(async () => { field.dispatchEvent(new window.MouseEvent('click', { bubbles: true })) })
   await flush(2)
   assert.equal(queryAll(page.container, '.rd-card[data-highlighted]').length, 0, 'clicking plain text does nothing')
+  await page.unmount()
+})
+
+
+await test('the edit view renders tables and images instead of source', async () => {
+  const source = [
+    '第一段内容。',
+    '',
+    '| 指标 | 数值 |',
+    '| --- | --- |',
+    '| 余额 | 42.6 |',
+    '',
+    '![示意图](https://example.com/a.png)',
+  ].join('\n')
+  const page = mount({ seed: { title: '图表', text: source, runs: [] }, mode: 'edit' })
+  await page.render()
+  const blocks = queryAll(page.container, '.rd-block')
+  assert.ok(blocks.length >= 3, `blocks rendered: ${blocks.length}`)
+  const table = page.container.querySelector('.rd-blocks table')
+  assert.ok(table, 'table renders in the edit view')
+  assert.ok(table.textContent.includes('余额') && table.textContent.includes('42.6'), table.textContent)
+  const image = page.container.querySelector('.rd-blocks .rd-image img')
+  assert.ok(image, 'image renders in the edit view')
+  assert.equal(image.getAttribute('src'), 'https://example.com/a.png')
+  assert.ok(!page.container.querySelector('textarea.rd-text'), 'the source editor is not used')
+  await page.unmount()
+})
+
+await test('clicking a block edits just that block and keeps the rest', async () => {
+  const page = mount({ seed: { title: '块编辑', text: '第一段内容。\n\n第二段内容。', runs: [] }, mode: 'edit' })
+  await page.render()
+  const blocks = queryAll(page.container, '.rd-block')
+  assert.equal(blocks.length, 2)
+  click(blocks[0])
+  await flush()
+  const input = page.container.querySelector('.rd-block-input')
+  assert.ok(input, 'inline editor appears')
+  assert.equal(input.value, '第一段内容。', 'it holds exactly that block source')
+
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+  await act(async () => {
+    setter.call(input, '改过的第一段。')
+    input.dispatchEvent(new window.Event('input', { bubbles: true }))
+  })
+  const done = queryAll(page.container, '.rd-block-actions .rd-mini').find(node => node.textContent === '完成')
+  click(done)
+  await flush(4)
+  assert.equal(page.container.querySelector('.rd-block-input'), null, 'editor closes')
+  const rendered = queryAll(page.container, '.rd-block').map(node => node.textContent)
+  assert.ok(rendered[0].includes('改过的第一段'), rendered.join(' | '))
+  assert.ok(rendered[1].includes('第二段内容'), 'the other block is untouched')
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 520)) })
+  const saved = JSON.parse(window.localStorage.getItem('dsh.review-desk.v1'))
+  assert.equal(saved.text, '改过的第一段。\n\n第二段内容。')
+  await page.unmount()
+})
+
+await test('Escape cancels a block edit without touching the document', async () => {
+  const page = mount({ seed: { title: '取消', text: '第一段内容。', runs: [] }, mode: 'edit' })
+  await page.render()
+  click(page.container.querySelector('.rd-block'))
+  await flush()
+  const input = page.container.querySelector('.rd-block-input')
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+  await act(async () => {
+    setter.call(input, '不该保存的改动')
+    input.dispatchEvent(new window.Event('input', { bubbles: true }))
+  })
+  await act(async () => {
+    input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  })
+  await flush(3)
+  assert.equal(page.container.querySelector('.rd-block-input'), null, 'editor closes')
+  assert.ok(page.container.querySelector('.rd-block').textContent.includes('第一段内容。'), 'text unchanged')
+  await page.unmount()
+})
+
+await test('a click on a reviewed passage in the block view opens its results, not the editor', async () => {
+  const page = mount({
+    seed: {
+      title: '块视图划线',
+      text: '第一段内容。\n\n第二段内容。',
+      runs: [{ ...seedRun('r1', 'logic', '### 结构判断\n一条结论。'), selection: { start: 0, end: 5, text: '第一段内容' } }],
+    },
+    mode: 'edit',
+  })
+  await page.render()
+  const mark = page.container.querySelector('.rd-blocks .rd-mark')
+  assert.ok(mark, 'the block view carries the marks')
+  click(mark)
+  await flush(3)
+  assert.equal(queryAll(page.container, '.rd-card[data-highlighted]').length, 1, 'its result is highlighted')
+  assert.equal(page.container.querySelector('.rd-block-input'), null, 'the passage does not open the editor')
   await page.unmount()
 })
 

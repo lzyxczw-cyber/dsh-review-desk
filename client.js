@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({
     /** Id shared by the sidebar entry and the main panel it opens. */
     const PANEL_ID = 'review-desk'
     /** Build tag, surfaced in the page attribute and the console. */
-    const BUILD = '2026-11-13.8'
+    const BUILD = '2026-11-13.9'
     /** Locale namespace owned by this plugin. */
     const NS = 'reviewDesk'
     /** Authenticated route the Host half registered. */
@@ -131,7 +131,13 @@ window.__ModuleLoader__.load({
       colReview: '审查',
       colResults: '结果',
       modeEdit: '编辑',
+      modeSource: '源码',
       modePreview: '预览',
+      blockEditHint: '点任意段落即可修改；表格与图片保持原样显示',
+      blockCommit: '完成',
+      blockCancel: '取消',
+      imageAlt: '图片',
+      imageBlocked: '图片无法加载',
       modeName: '显示方式',
       viewOriginal: '原件',
       revise: '修改',
@@ -287,7 +293,13 @@ window.__ModuleLoader__.load({
       colReview: 'Review',
       colResults: 'Results',
       modeEdit: 'Edit',
+      modeSource: 'Source',
       modePreview: 'Preview',
+      blockEditHint: 'Click any block to edit it; tables and images stay rendered',
+      blockCommit: 'Done',
+      blockCancel: 'Cancel',
+      imageAlt: 'Image',
+      imageBlocked: 'Image failed to load',
       modeName: 'View mode',
       viewOriginal: 'Original',
       revise: 'Revise',
@@ -1170,7 +1182,7 @@ window.__ModuleLoader__.load({
     /** Inline run of one line, carrying the source range its visible text came from. */
     function inlineRuns(line, base) {
       const runs = []
-      const pattern = /(\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|\[[^\]]+\]\([^)\s]+\))/gu
+      const pattern = /(!\[[^\]]*\]\([^)\s]+\)|\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|\[[^\]]+\]\([^)\s]+\))/gu
       let cursor = 0
       const plain = (end) => {
         if (end <= cursor) return
@@ -1181,7 +1193,12 @@ window.__ModuleLoader__.load({
         const raw = match[0]
         const start = base + match.index
         const end = start + raw.length
-        if (raw.startsWith('**') || raw.startsWith('__')) {
+        if (raw.startsWith('![')) {
+          const image = /^!\[([^\]]*)\]\(([^)\s]+)\)$/u.exec(raw)
+          if (image !== null) {
+            runs.push({ text: '', start, end, image: image[2], alt: image[1] })
+          }
+        } else if (raw.startsWith('**') || raw.startsWith('__')) {
           runs.push({ text: raw.slice(2, -2), start: start + 2, end: end - 2, bold: true })
         } else if (raw.startsWith('~~')) {
           runs.push({ text: raw.slice(2, -2), start: start + 2, end: end - 2, strike: true })
@@ -1268,14 +1285,31 @@ window.__ModuleLoader__.load({
       const blocks = []
       let index = 0
       const isSpace = (value) => value.trim() === ''
-      const startsBlock = (value) => /^ {0,3}(#{1,6}\s|[-*+]\s|\d+[.)]\s|>|-{3,}$)/u.test(value) || /^\s*\|/u.test(value)
+      const isImage = (value) => /^!\[[^\]]*\]\([^)\s]+\)$/u.test(value.trim())
+      const startsBlock = (value) => /^ {0,3}(#{1,6}\s|[-*+]\s|\d+[.)]\s|>|-{3,}$)/u.test(value)
+        || /^\s*\|/u.test(value)
+        || isImage(value)
+      const lineEnd = (line) => line.start + line.text.length
 
       while (index < lines.length) {
         const line = lines[index]
         if (isSpace(line.text)) { index += 1; continue }
 
         if (/^ {0,3}(-{3,}|\*{3,})$/u.test(line.text)) {
-          blocks.push({ kind: 'hr' })
+          blocks.push({ kind: 'hr', start: line.start, end: lineEnd(line) })
+          index += 1
+          continue
+        }
+
+        if (isImage(line.text)) {
+          const image = /^!\[([^\]]*)\]\(([^)\s]+)\)$/u.exec(line.text.trim())
+          blocks.push({
+            kind: 'image',
+            src: image[2],
+            alt: image[1],
+            start: line.start + line.text.indexOf('!'),
+            end: lineEnd(line),
+          })
           index += 1
           continue
         }
@@ -1285,6 +1319,8 @@ window.__ModuleLoader__.load({
           blocks.push({
             kind: 'heading',
             level: heading[1].length,
+            start: line.start,
+            end: lineEnd(line),
             lines: [{ text: heading[2], start: line.start + line.text.length - heading[2].length }],
           })
           index += 1
@@ -1294,8 +1330,11 @@ window.__ModuleLoader__.load({
         if (/^\s*\|/u.test(line.text)) {
           const rows = []
           let separator = null
+          const tableStart = line.start
+          let tableEnd = lineEnd(line)
           while (index < lines.length && /^\s*\|/u.test(lines[index].text)) {
             const raw = lines[index]
+            tableEnd = lineEnd(raw)
             if (separator === null && /^\s*\|[\s:|-]+\|\s*$/u.test(raw.text)) {
               separator = rows.length
               index += 1
@@ -1304,7 +1343,7 @@ window.__ModuleLoader__.load({
             rows.push({ cells: tableCells(raw.text, raw.start), header: separator === null })
             index += 1
           }
-          if (rows.length > 0) blocks.push({ kind: 'table', rows })
+          if (rows.length > 0) blocks.push({ kind: 'table', rows, start: tableStart, end: tableEnd })
           continue
         }
 
@@ -1312,82 +1351,97 @@ window.__ModuleLoader__.load({
         if (item !== null) {
           const ordered = /\d/u.test(item[2])
           const items = []
+          const listStart = line.start
+          let listEnd = lineEnd(line)
           while (index < lines.length) {
             const next = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/u.exec(lines[index].text)
             if (next === null) break
+            listEnd = lineEnd(lines[index])
             items.push({
               text: next[3],
               start: lines[index].start + lines[index].text.length - next[3].length,
             })
             index += 1
           }
-          blocks.push({ kind: ordered ? 'ol' : 'ul', items })
+          blocks.push({ kind: ordered ? 'ol' : 'ul', items, start: listStart, end: listEnd })
           continue
         }
 
         if (/^\s*>/u.test(line.text)) {
           const quote = []
+          const quoteStart = line.start
+          let quoteEnd = lineEnd(line)
           while (index < lines.length && /^\s*>/u.test(lines[index].text)) {
             const raw = lines[index].text.replace(/^\s*>\s?/u, '')
+            quoteEnd = lineEnd(lines[index])
             quote.push({ text: raw, start: lines[index].start + lines[index].text.length - raw.length })
             index += 1
           }
-          blocks.push({ kind: 'quote', lines: quote })
+          blocks.push({ kind: 'quote', lines: quote, start: quoteStart, end: quoteEnd })
           continue
         }
 
         const paragraph = []
+        const paragraphStart = line.start
+        let paragraphEnd = lineEnd(line)
         while (index < lines.length && !isSpace(lines[index].text) && !startsBlock(lines[index].text)) {
+          paragraphEnd = lineEnd(lines[index])
           paragraph.push({ text: lines[index].text, start: lines[index].start })
           index += 1
         }
-        if (paragraph.length > 0) blocks.push({ kind: 'p', lines: paragraph })
+        if (paragraph.length > 0) blocks.push({ kind: 'p', lines: paragraph, start: paragraphStart, end: paragraphEnd })
         else index += 1
       }
       return blocks
     }
 
-    /** Render parsed blocks; every visible character keeps its source offset. */
-    function renderPreview(text, marks, markTitle) {
-      const blocks = parseBlocks(text)
-      const blockNodes = blocks.map((block, blockIndex) => {
-        const key = `b${blockIndex}`
-        const lineNodes = (lines, prefix) => lines.flatMap((line, lineIndex) => {
-          const nodes = runsToNodes(inlineRuns(line.text, line.start), `${prefix}-${lineIndex}`, marks, markTitle)
-          return lineIndex === 0 ? nodes : [h('br', { key: `${prefix}-br${lineIndex}` }), ...nodes]
-        })
-
-        switch (block.kind) {
-          case 'hr':
-            return h('hr', { key })
-          case 'heading': {
-            const level = Math.min(block.level, 4)
-            return h(`h${level}`, { key }, lineNodes(block.lines, key))
-          }
-          case 'quote':
-            return h('blockquote', { key }, lineNodes(block.lines, key))
-          case 'table': {
-            const head = block.rows.filter(row => row.header)
-            const body = block.rows.filter(row => !row.header)
-            const cell = (value, cellIndex) => h('td', { key: `c${cellIndex}` },
-              runsToNodes(inlineRuns(value.text, value.start), `${key}-${cellIndex}`, marks, markTitle))
-            return h('div', { key, className: 'rd-table-wrap' },
-              h('table', null,
-                head.length === 0 ? null : h('thead', null, head.map((row, rowIndex) => h('tr', { key: `h${rowIndex}` },
-                  row.cells.map((value, cellIndex) => h('th', { key: `c${cellIndex}` },
-                    runsToNodes(inlineRuns(value.text, value.start), `${key}-h${rowIndex}-${cellIndex}`, marks, markTitle)))))),
-                body.length === 0 ? null : h('tbody', null, body.map((row, rowIndex) => h('tr', { key: `b${rowIndex}` },
-                  row.cells.map((value, cellIndex) => cell(value, cellIndex)))))))
-          }
-          case 'ul':
-          case 'ol':
-            return h(block.kind, { key }, block.items.map((item, itemIndex) => h('li', { key: `i${itemIndex}` },
-              runsToNodes(inlineRuns(item.text, item.start), `${key}-${itemIndex}`, marks, markTitle))))
-          default:
-            return h('p', { key }, lineNodes(block.lines, key))
-        }
+    /** Render one block; every visible character keeps its source offset. */
+    function renderBlock(block, blockIndex, marks, markTitle) {
+      const key = `b${blockIndex}`
+      const lineNodes = (lines, prefix) => lines.flatMap((line, lineIndex) => {
+        const nodes = runsToNodes(inlineRuns(line.text, line.start), `${prefix}-${lineIndex}`, marks, markTitle)
+        return lineIndex === 0 ? nodes : [h('br', { key: `${prefix}-br${lineIndex}` }), ...nodes]
       })
-      return h('div', { className: 'rd-md-preview' }, blockNodes)
+
+      switch (block.kind) {
+        case 'hr':
+          return h('hr', { key })
+        case 'image':
+          return h('figure', { key, className: 'rd-image' },
+            h('img', { src: block.src, alt: block.alt, loading: 'lazy' }),
+            block.alt === '' ? null : h('figcaption', null, block.alt))
+        case 'heading': {
+          const level = Math.min(block.level, 4)
+          return h(`h${level}`, { key }, lineNodes(block.lines, key))
+        }
+        case 'quote':
+          return h('blockquote', { key }, lineNodes(block.lines, key))
+        case 'table': {
+          const head = block.rows.filter(row => row.header)
+          const body = block.rows.filter(row => !row.header)
+          const cell = (value, cellIndex) => h('td', { key: `c${cellIndex}` },
+            runsToNodes(inlineRuns(value.text, value.start), `${key}-${cellIndex}`, marks, markTitle))
+          return h('div', { key, className: 'rd-table-wrap' },
+            h('table', null,
+              head.length === 0 ? null : h('thead', null, head.map((row, rowIndex) => h('tr', { key: `h${rowIndex}` },
+                row.cells.map((value, cellIndex) => h('th', { key: `c${cellIndex}` },
+                  runsToNodes(inlineRuns(value.text, value.start), `${key}-h${rowIndex}-${cellIndex}`, marks, markTitle)))))),
+              body.length === 0 ? null : h('tbody', null, body.map((row, rowIndex) => h('tr', { key: `b${rowIndex}` },
+                row.cells.map((value, cellIndex) => cell(value, cellIndex)))))))
+        }
+        case 'ul':
+        case 'ol':
+          return h(block.kind, { key }, block.items.map((item, itemIndex) => h('li', { key: `i${itemIndex}` },
+            runsToNodes(inlineRuns(item.text, item.start), `${key}-${itemIndex}`, marks, markTitle))))
+        default:
+          return h('p', { key }, lineNodes(block.lines, key))
+      }
+    }
+
+    /** The rendered document, read-only; every visible character keeps its source offset. */
+    function renderPreview(text, marks, markTitle) {
+      return h('div', { className: 'rd-md-preview' },
+        parseBlocks(text).map((block, index) => renderBlock(block, index, marks, markTitle)))
     }
 
     /** Source offset of one selection edge inside the rendered preview. */
@@ -2644,6 +2698,61 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
   box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent);
 }
 
+/* Block editing ------------------------------------------------------- */
+.rd-blocks { position: relative; }
+.rd-block-hint {
+  margin: 0 0 10px;
+  font-size: 11.5px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-secondary);
+}
+.rd-block {
+  position: relative;
+  padding: 1px 8px 1px 10px;
+  margin: 0 -8px 2px -10px;
+  border-radius: 8px;
+  cursor: text;
+  transition: background-color 120ms ease;
+}
+.rd-block:hover { background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent); }
+.rd-block > :first-child { margin-top: 0; }
+.rd-block > :last-child { margin-bottom: 0; }
+.rd-block-edit {
+  margin: 2px -8px 6px -10px;
+  padding: 6px 8px 8px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dsw-alias-brand-primary) 22%, transparent);
+}
+.rd-block-input {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-base);
+  color: inherit;
+  font: inherit;
+  line-height: 1.7;
+  resize: vertical;
+  outline: none;
+}
+.rd-block-input:focus-visible {
+  border-color: var(--dsw-alias-brand-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-brand-primary) 28%, transparent);
+}
+.rd-block-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
+.rd-image { margin: 14px 0; }
+.rd-image img { display: block; max-width: 100%; height: auto; border-radius: 8px; }
+.rd-image figcaption {
+  margin-top: 6px;
+  font-size: 11.5px;
+  line-height: 17px;
+  color: var(--dsw-alias-label-secondary);
+  text-align: center;
+}
+
 /* Rendered preview ---------------------------------------------------- */
 .rd-preview {
   flex: 1;
@@ -3488,7 +3597,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
     /** Compact segmented control for the manuscript column. */
     function ModeToggle({ t, mode, onChange, disabled }) {
       return h('div', { className: 'rd-segmented', role: 'group', 'aria-label': t('modeName') },
-        [['edit', t('modeEdit')], ['preview', t('modePreview')]].map(([value, label]) => h('button', {
+        [['edit', t('modeEdit')], ['source', t('modeSource')], ['preview', t('modePreview')]].map(([value, label]) => h('button', {
           key: value,
           type: 'button',
           className: 'rd-segment',
@@ -3895,6 +4004,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
       const [widths, setWidths] = useState(readWidths)
       const [pendingPackage, setPendingPackage] = useState(null)
       const [highlight, setHighlight] = useState({ ids: [], nonce: 0 })
+      const [editingBlock, setEditingBlock] = useState(null)
       const [dragging, setDragging] = useState('')
       const [filter, setFilter] = useState('all')
       const [expanded, setExpanded] = useState(() => new Set())
@@ -3911,6 +4021,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
       const highlightTimer = useRef(0)
       const textRef = useRef(null)
       const previewRef = useRef(null)
+      const blocksRef = useRef(null)
       const scrollRef = useRef(null)
       const overlayRef = useRef(null)
       const innerRef = useRef(null)
@@ -3932,6 +4043,11 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
 
       // Ranges that still match the text, merged for one band per block.
       const marks = useMemo(() => reviewedMarks(runs, snapshot.text), [runs, snapshot.text])
+      const blocks = useMemo(() => parseBlocks(snapshot.text), [snapshot.text])
+      const markTitle = useCallback(
+        index => t('markResults').replace('{count}', String(marks[index]?.runs.length ?? 0)),
+        [marks, t],
+      )
 
       // Only the newest result opens; the rest stay folded until asked.
       useEffect(() => {
@@ -4002,6 +4118,42 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
         if (dom !== null && !dom.isCollapsed) return
         revealRuns(mark.runs.map(run => run.id))
       }, [marks, revealRuns])
+
+      /** Start editing one block in place, with its exact source slice. */
+      const startBlockEdit = useCallback((index) => {
+        const block = blocks[index]
+        if (block === undefined) return
+        const text = store.get().text
+        setEditingBlock({ index, draft: text.slice(block.start, block.end) })
+      }, [blocks])
+
+      const commitBlock = useCallback(() => {
+        const editing = editingBlock
+        if (editing === null) return
+        const block = blocks[editing.index]
+        setEditingBlock(null)
+        if (block === undefined) return
+        const text = store.get().text
+        if (editing.draft === text.slice(block.start, block.end)) return
+        store.update({ text: text.slice(0, block.start) + editing.draft + text.slice(block.end) })
+      }, [blocks, editingBlock])
+
+      /** Clicks in the block view open the clicked block unless it belongs to a mark. */
+      const onBlocksClick = useCallback((event) => {
+        if (editingBlock !== null) return
+        const target = event.target
+        if (typeof target?.closest !== 'function') return
+        if (target.closest('[data-mark]') !== null) return
+        if (target.closest('.rd-block-edit') !== null) return
+        const dom = window.getSelection()
+        if (dom !== null && !dom.isCollapsed) return
+        const wrapper = target.closest('[data-block]')
+        if (wrapper === null) return
+        startBlockEdit(Number(wrapper.getAttribute('data-block')))
+      }, [editingBlock, startBlockEdit])
+
+      // Leaving the block editor (a replace, an import, a new document) drops the draft.
+      useEffect(() => { setEditingBlock(null) }, [snapshot.text])
 
       const toggleRun = useCallback((id) => {
         setExpanded((current) => {
@@ -4305,8 +4457,9 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
         }
         const index = marks.findIndex(mark => start >= mark.start && start < mark.end)
         const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
-        if (viewMode === 'preview') {
-          const element = index < 0 ? null : previewRef.current?.querySelector(`[data-mark="${index}"]`)
+        if (viewMode !== 'source') {
+          const root = viewMode === 'edit' ? blocksRef.current : previewRef.current
+          const element = index < 0 ? null : root?.querySelector(`[data-mark="${index}"]`)
           element?.scrollIntoView?.({ block: 'center', behavior: reduce ? 'auto' : 'smooth' })
           setSelection({ start, end, text: current.slice(start, end) })
           return
@@ -4382,7 +4535,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
           return
         }
         pendingFocus.current = range
-        setViewMode('edit')
+        setViewMode('source')
         setSelection({ ...range, text: body })
         showNotice(matches ? t('replacedNotice') : t('appendedNotice'))
       }, [showNotice, t])
@@ -4455,16 +4608,15 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
       /** Switching back to editing restores the passage the user had selected. */
       const changeMode = useCallback((mode) => {
         if (mode === viewMode) return
-        if (mode === 'edit' && selection.text !== '') {
+        if (mode === 'source' && selection.text !== '') {
           pendingFocus.current = { start: selection.start, end: selection.end }
         }
         setViewMode(mode)
       }, [selection, viewMode])
 
-      /** Read a text selection made in the rendered preview back as source offsets. */
-      const readPreviewSelection = useCallback(() => {
-        const root = previewRef.current
-        if (root === null) return
+      /** Read a text selection made in a rendered view back as source offsets. */
+      const readViewSelection = useCallback((root) => {
+        if (root === null || root === undefined) return
         const dom = window.getSelection()
         if (dom === null || dom.rangeCount === 0 || dom.isCollapsed) return
         const range = dom.getRangeAt(0)
@@ -4635,7 +4787,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
             ? { name: file.name, file }
             : null)
           setPages(null)
-          setViewMode('preview')
+          setViewMode('edit')
           showNotice(extension === 'docx' || extension === 'docm' || extension === 'pdf'
             ? t('importFormatKept')
             : t('imported'))
@@ -4883,32 +5035,92 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
                       tabIndex: 0,
                       role: 'document',
                       'aria-label': t('manuscript'),
-                      onMouseUp: readPreviewSelection,
-                      onKeyUp: readPreviewSelection,
+                      onMouseUp: event => readViewSelection(event.currentTarget),
+                      onKeyUp: event => readViewSelection(event.currentTarget),
                       onClick: onPreviewClick,
-                    }, renderPreview(snapshot.text, marks, index => t('markResults').replace('{count}', String(marks[index]?.runs.length ?? 0))))
-                    : h('div', { className: 'rd-editor' },
-                      h('div', { className: 'rd-highlights', ref: overlayRef, 'aria-hidden': true },
-                        h('div', { className: 'rd-highlights-inner', ref: innerRef }, renderMarked(snapshot.text, marks))),
-                      h('textarea', {
-                        ref: textRef,
-                        className: 'rd-text',
-                        value: snapshot.text,
-                        spellCheck: false,
+                    }, renderPreview(snapshot.text, marks, markTitle))
+                    : viewMode === 'source'
+                      ? h('div', { className: 'rd-editor' },
+                        h('div', { className: 'rd-highlights', ref: overlayRef, 'aria-hidden': true },
+                          h('div', { className: 'rd-highlights-inner', ref: innerRef }, renderMarked(snapshot.text, marks))),
+                        h('textarea', {
+                          ref: textRef,
+                          className: 'rd-text',
+                          value: snapshot.text,
+                          spellCheck: false,
+                          'aria-label': t('manuscript'),
+                          placeholder: t('emptyBody'),
+                          onChange: event => store.update({ text: event.target.value }),
+                          onSelect: event => syncSelection(event.currentTarget),
+                          onKeyUp: event => syncSelection(event.currentTarget),
+                          onMouseUp: event => syncSelection(event.currentTarget),
+                          onScroll: event => syncScroll(event.currentTarget.scrollTop),
+                          onKeyDown,
+                          onClick: (event) => {
+                            const field = event.currentTarget
+                            if (field.selectionStart !== field.selectionEnd) return
+                            revealAtOffset(field.selectionStart ?? 0)
+                          },
+                        }))
+                      : h('div', {
+                        className: 'rd-preview rd-blocks',
+                        ref: blocksRef,
+                        tabIndex: 0,
+                        role: 'document',
                         'aria-label': t('manuscript'),
-                        placeholder: t('emptyBody'),
-                        onChange: event => store.update({ text: event.target.value }),
-                        onSelect: event => syncSelection(event.currentTarget),
-                        onKeyUp: event => syncSelection(event.currentTarget),
-                        onMouseUp: event => syncSelection(event.currentTarget),
-                        onScroll: event => syncScroll(event.currentTarget.scrollTop),
-                        onKeyDown,
+                        onMouseUp: event => readViewSelection(event.currentTarget),
+                        onKeyUp: event => readViewSelection(event.currentTarget),
                         onClick: (event) => {
-                          const field = event.currentTarget
-                          if (field.selectionStart !== field.selectionEnd) return
-                          revealAtOffset(field.selectionStart ?? 0)
+                          onPreviewClick(event)
+                          onBlocksClick(event)
                         },
-                      }))))),
+                      },
+                      h('p', { className: 'rd-block-hint' }, t('blockEditHint')),
+                      blocks.map((block, index) => (
+                        editingBlock !== null && editingBlock.index === index
+                          ? h('div', {
+                            key: `e${index}`,
+                            className: 'rd-block-edit',
+                            onBlur: (event) => {
+                              const next = event.relatedTarget
+                              if (next !== null && event.currentTarget.contains(next)) return
+                              commitBlock()
+                            },
+                          },
+                          h('textarea', {
+                            className: 'rd-block-input',
+                            value: editingBlock.draft,
+                            rows: Math.min(18, Math.max(2, editingBlock.draft.split('\n').length)),
+                            autoFocus: true,
+                            spellCheck: false,
+                            'aria-label': t('manuscript'),
+                            onChange: event => setEditingBlock({ index, draft: event.target.value }),
+                            onKeyDown: (event) => {
+                              if (event.key === 'Escape') {
+                                event.preventDefault()
+                                setEditingBlock(null)
+                              } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                                event.preventDefault()
+                                commitBlock()
+                              }
+                            },
+                          }),
+                          h('div', { className: 'rd-block-actions' },
+                            h('button', {
+                              type: 'button',
+                              className: 'rd-mini',
+                              onMouseDown: event => event.preventDefault(),
+                              onClick: commitBlock,
+                            }, t('blockCommit')),
+                            h('button', {
+                              type: 'button',
+                              className: 'rd-mini',
+                              onClick: () => setEditingBlock(null),
+                            }, t('blockCancel'))))
+                          : h('div', { key: `b${index}`, className: 'rd-block', 'data-block': index },
+                            renderBlock(block, index, marks, markTitle))
+                      )))))),
+
 
           // 审查 -----------------------------------------------------------------
           h('section', { className: 'rd-col rd-col-review', 'aria-label': t('colReview') },
