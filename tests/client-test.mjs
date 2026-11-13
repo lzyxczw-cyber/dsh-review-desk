@@ -1495,6 +1495,38 @@ await test('a click on a reviewed passage in the block view opens its results, n
   await page.unmount()
 })
 
+
+await test('each action paints its own underline colour, and one passage can show several', async () => {
+  const passage = { start: 0, end: 5, text: '第一段内容' }
+  const page = mount({
+    seed: {
+      title: '配色',
+      text: '第一段内容。\n\n第二段内容。',
+      runs: [
+        { ...seedRun('r1', 'source', '### 核查\n结论。'), selection: passage },
+        { ...seedRun('r2', 'logic', '### 结构\n结论。'), selection: passage },
+        { ...seedRun('r3', 'expand', '### 扩写\n成品。'), selection: { start: 5, end: 6, text: '。' } },
+      ],
+    },
+    mode: 'edit',
+  })
+  await page.render()
+  const marks = queryAll(page.container, '.rd-blocks .rd-mark')
+  const stacked = marks.find(node => (node.getAttribute('style') ?? '').includes('--rd-act-source'))
+  assert.ok(stacked, 'the merged mark carries a colour')
+  const style = stacked.getAttribute('style')
+  assert.ok(style.includes('--rd-act-logic'), `both actions colour the merged mark: ${style}`)
+  assert.ok(style.includes('var(--rd-act-'), style)
+
+  const tabs = queryAll(page.container, '.rd-tab')
+  const sourceTab = tabs.find(node => node.textContent.includes('来源查证'))
+  assert.ok(sourceTab.querySelector('.rd-act-dot'), 'tabs carry the colour legend')
+  const cards = queryAll(page.container, '.rd-card-head')
+  assert.ok(cards.length === 3, 'three result cards')
+  assert.ok(cards.every(card => card.querySelector('.rd-act-dot')), 'cards carry their action dot')
+  await page.unmount()
+})
+
 if (failures > 0) {
   console.error(`\n${failures} client check(s) failed`)
   process.exitCode = 1

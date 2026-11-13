@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({
     /** Id shared by the sidebar entry and the main panel it opens. */
     const PANEL_ID = 'review-desk'
     /** Build tag, surfaced in the page attribute and the console. */
-    const BUILD = '2026-11-13.10'
+    const BUILD = '2026-11-13.11'
     /** Locale namespace owned by this plugin. */
     const NS = 'reviewDesk'
     /** Authenticated route the Host half registered. */
@@ -1239,6 +1239,37 @@ window.__ModuleLoader__.load({
       return out
     }
 
+    /** The actions behind one merged mark, in the order they first appear. */
+    function markActions(mark) {
+      if (mark === undefined || !Array.isArray(mark.runs)) return []
+      const seen = []
+      for (const run of mark.runs) {
+        if (Object.hasOwn(ACTION_COLORS, run.action) && !seen.includes(run.action)) seen.push(run.action)
+      }
+      return seen
+    }
+
+    /** Underline stack: the newest action paints the outermost band. */
+    function markShadow(mark) {
+      const actions = markActions(mark)
+      if (actions.length === 0) return 'inset 0 -2px 0 var(--rd-act-custom)'
+      return actions
+        .slice()
+        .reverse()
+        .map((action, index) => `inset 0 -${(index + 1) * 2}px 0 var(--rd-act-${action})`)
+        .join(', ')
+    }
+
+    /** Tint and underline for one mark, shared by the editor band and the rendered runs. */
+    function markStyle(mark) {
+      const actions = markActions(mark)
+      const style = { boxShadow: markShadow(mark) }
+      if (actions.length > 0) {
+        style.background = `color-mix(in srgb, var(--rd-act-${actions[actions.length - 1]}) 12%, transparent)`
+      }
+      return style
+    }
+
     function runsToNodes(runs, keyPrefix, marks, markTitle) {
       return splitRunsAtMarks(runs, marks)
         .filter(run => run.text !== '')
@@ -1250,6 +1281,7 @@ window.__ModuleLoader__.load({
               run.mark >= 0 ? 'rd-mark' : ''].filter(Boolean).join(' ') || undefined,
             ...(run.mark >= 0 ? { 'data-mark': run.mark } : {}),
             ...(run.mark >= 0 && markTitle !== undefined ? { title: markTitle(run.mark) } : {}),
+            ...(run.mark >= 0 ? { style: markStyle(marks[run.mark]) } : {}),
           }
           if (run.href !== undefined) {
             return h('a', { ...props, href: run.href, target: '_blank', rel: 'noreferrer noopener' }, run.text)
@@ -1621,7 +1653,12 @@ window.__ModuleLoader__.load({
       let cursor = 0
       marks.forEach((mark, index) => {
         if (mark.start > cursor) nodes.push(text.slice(cursor, mark.start))
-        nodes.push(h('span', { key: `mark-${index}`, className: 'rd-mark', 'data-mark': index }, text.slice(mark.start, mark.end)))
+        nodes.push(h('span', {
+          key: `mark-${index}`,
+          className: 'rd-mark',
+          'data-mark': index,
+          style: markStyle(mark),
+        }, text.slice(mark.start, mark.end)))
         cursor = mark.end
       })
       if (cursor < text.length) nodes.push(text.slice(cursor))
@@ -2455,6 +2492,9 @@ window.__ModuleLoader__.load({
     /** Result tabs: the four analyses plus free-form instructions. */
     const ACTION_TABS = [...ACTION_ORDER, 'custom']
 
+    /** Underline palette: one colour per action, shared by marks, tabs, and cards. */
+    const ACTION_COLORS = { source: true, logic: true, expand: true, relate: true, custom: true }
+
     const ACTION_META = {
       source: { icon: IconSource, label: 'actionSource', desc: 'actionSourceDesc', shortcut: '1' },
       logic: { icon: IconLogic, label: 'actionLogic', desc: 'actionLogicDesc', shortcut: '2' },
@@ -2469,6 +2509,11 @@ window.__ModuleLoader__.load({
 
     const CSS = `
 .rd-page {
+  --rd-act-source: #2f6fed;
+  --rd-act-logic: #8b5cf6;
+  --rd-act-expand: #0f9d58;
+  --rd-act-relate: #d97706;
+  --rd-act-custom: #64748b;
   --rd-inset: clamp(20px, 2.4vw, 32px);
   --rd-col-pad: clamp(14px, 1.4vw, 20px);
   --rd-radius-card: 14px;
@@ -2805,6 +2850,18 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
   background: color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent);
   box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent);
 }
+
+/* Action colour dots -------------------------------------------------- */
+.rd-act-dot {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  vertical-align: 1px;
+}
+.rd-tab .rd-act-dot { width: 5px; height: 5px; margin-right: 4px; }
 
 /* Block editing ------------------------------------------------------- */
 .rd-blocks { position: relative; }
@@ -3970,6 +4027,11 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
       },
       h('span', { className: 'rd-card-chevron', 'aria-hidden': true }, expanded ? '▾' : '▸'),
       h('span', { className: 'rd-card-icon' }, h(Icon, { size: 14 })),
+      h('span', {
+        className: 'rd-act-dot',
+        'aria-hidden': true,
+        style: { background: `var(--rd-act-${Object.hasOwn(ACTION_COLORS, run.action) ? run.action : 'custom'})` },
+      }),
       h('span', { className: 'rd-card-title' }, t(meta.label)),
       run.revise === true ? h('span', { className: 'rd-card-chip' }, t('revisionBadge')) : null,
       run.wholeDocument === true ? h('span', { className: 'rd-card-chip' }, t('wholeDocument')) : null,
@@ -5256,7 +5318,14 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
                 'aria-selected': filter === tab.key,
                 disabled: tab.key !== 'all' && tab.count === 0,
                 onClick: () => setFilter(tab.key),
-              }, tab.label, h('span', { className: 'rd-tab-count' }, String(tab.count))))),
+              },
+              tab.key === 'all' ? null : h('span', {
+                className: 'rd-act-dot',
+                'aria-hidden': true,
+                style: { background: `var(--rd-act-${tab.key})` },
+              }),
+              tab.label,
+              h('span', { className: 'rd-tab-count' }, String(tab.count))))),
             h('div', { className: 'rd-results-body', ref: scrollRef, 'aria-busy': busy },
               visibleRuns.length === 0
                 ? (runs.length === 0
