@@ -306,6 +306,17 @@ async function analyze(payload) {
   console.log('ok  explicit route + level')
 }
 
+// 10b. an explicit output cap travels with the request, clamped to the supported range
+{
+  await analyze({ action: 'expand', text: '一段需要扩写的文字。', maxTokens: 9_000 })
+  assert.equal(callConfigs.at(-1).maxTokens, 9_000)
+  await analyze({ action: 'expand', text: '一段需要扩写的文字。', maxTokens: 99_999 })
+  assert.equal(callConfigs.at(-1).maxTokens, 16_000, 'clamped to the upper bound')
+  await analyze({ action: 'logic', text: '一段文字。' })
+  assert.equal(callConfigs.at(-1).maxTokens, 6_000, 'per-action default applies')
+  console.log('ok  output cap override')
+}
+
 // 11. an unknown route is refused before dispatch
 {
   const { frames } = await analyze({ action: 'logic', text: '一段文字。', provider: 'gone', model: 'x' })

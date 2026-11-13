@@ -58,7 +58,10 @@ const LIMITS = {
 }
 
 /** Output-token caps per operation; generous enough for the required structure plus a reasoning block. */
-const MAX_TOKENS = { source: 4_000, logic: 4_000, expand: 5_000, relate: 4_000, custom: 4_000 }
+const MAX_TOKENS = { source: 6_000, logic: 6_000, expand: 8_000, relate: 6_000, custom: 6_000 }
+
+/** Bounds for a caller-supplied output cap (WPS panel / power users). */
+const MAX_TOKENS_RANGE = { min: 1_000, max: 16_000 }
 
 /** Planner cap: one small JSON object, with room for a reasoning block first. */
 const PLANNER_MAX_TOKENS = 1_200
@@ -207,6 +210,13 @@ function clampText(value, limit) {
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}\n……（内容过长，已截断）` : trimmed
 }
 
+/** Clamp an optional caller-supplied output cap; 0 means "use the action default". */
+function normalizeMaxTokens(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number) || number <= 0) return 0
+  return Math.min(MAX_TOKENS_RANGE.max, Math.max(MAX_TOKENS_RANGE.min, Math.round(number)))
+}
+
 /** Read one request body as the documented payload, rejecting unknown actions. */
 function readPayload(raw) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -233,6 +243,8 @@ function readPayload(raw) {
     provider: typeof raw.provider === 'string' ? raw.provider.slice(0, 100) : '',
     model: typeof raw.model === 'string' ? raw.model.slice(0, 200) : '',
     reasoningEffort: typeof raw.reasoningEffort === 'string' ? raw.reasoningEffort.slice(0, 40) : '',
+    /** Caller-supplied output cap; 0 keeps the per-action default. */
+    maxTokens: normalizeMaxTokens(raw.maxTokens),
     revise: raw.revise === true,
     original: clampText(raw.original, LIMITS.text),
     /** Evidence gathered before the model call; filled in by {@link analyze}. */
@@ -323,6 +335,7 @@ function resolveRoute(ctx, request) {
  */
 async function* streamText(ctx, request, signal) {
   const { provider, model, reasoningEffort } = resolveRoute(ctx, request)
+  const maxTokens = request.maxTokens > 0 ? request.maxTokens : MAX_TOKENS[request.action]
 
   let prepared
   try {
@@ -330,7 +343,7 @@ async function* streamText(ctx, request, signal) {
       {
         provider,
         model,
-        maxTokens: MAX_TOKENS[request.action],
+        maxTokens,
         ...(reasoningEffort === '' ? {} : { reasoningEffort }),
       },
       signal,
@@ -339,7 +352,7 @@ async function* streamText(ctx, request, signal) {
     // A level the model no longer accepts must not take the whole review down.
     if (reasoningEffort === '' || isAbort(error)) throw error
     prepared = await ctx.llm.prepareCall(
-      { provider, model, maxTokens: MAX_TOKENS[request.action] },
+      { provider, model, maxTokens },
       signal,
     )
     yield { warning: { code: 'reasoning-fallback', effort: reasoningEffort } }
@@ -692,6 +705,60 @@ async function handlePagesRequest(ctx, request) {
   }
 }
 
+/** Model catalog for the WPS panel's model / reasoning-level / output-cap pickers. */
+async function readModelCatalog(ctx) {
+  const selection = ctx.agentDefaultModel.currentSelection()
+  const defaultRoute = {
+    provider: typeof selection?.provider === 'string' ? selection.provider : '',
+    model: typeof selection?.model === 'string' ? selection.model : '',
+    reasoningEffort: typeof selection?.reasoningEffort === 'string' ? selection.reasoningEffort : '',
+  }
+  let available = []
+  try {
+    available = ctx.llm.listProviders()
+  } catch {
+    available = []
+  }
+  const providers = []
+  for (const entry of available) {
+    let models = []
+    try {
+      models = await ctx.llm.listModels(entry.id)
+    } catch {
+      models = []
+    }
+    providers.push({
+      id: String(entry.id ?? ''),
+      name: String(entry.name ?? entry.id ?? ''),
+      models: models.map(model => ({
+        id: String(model.id ?? ''),
+        name: String(model.name ?? model.id ?? ''),
+        reasoning: model.reasoning === undefined || model.reasoning === null
+          ? null
+          : {
+            defaultEffort: typeof model.reasoning.defaultEffort === 'string' ? model.reasoning.defaultEffort : '',
+            efforts: Array.isArray(model.reasoning.efforts)
+              ? model.reasoning.efforts.map(effort => ({
+                id: String(effort.id ?? ''),
+                name: String(effort.name ?? effort.id ?? ''),
+              }))
+              : [],
+          },
+      })),
+    })
+  }
+  return {
+    default: defaultRoute,
+    providers,
+    caps: {
+      /** Per-action defaults, mirrored so the panel can show and extend them. */
+      default: MAX_TOKENS,
+      min: MAX_TOKENS_RANGE.min,
+      max: MAX_TOKENS_RANGE.max,
+    },
+  }
+}
+
 /**
  * Serve the WPS add-in the same NDJSON review stream as the authenticated
  * route, over loopback only: the add-in runs in WPS, outside the DSH origin,
@@ -715,6 +782,17 @@ function startWpsBridge(ctx) {
     if (request.method === 'GET' && url.pathname === '/health') {
       response.writeHead(200, { ...headers, 'content-type': 'application/json; charset=utf-8' })
       response.end(JSON.stringify({ ok: true, service: 'review-desk-wps-bridge', bridge: '1' }))
+      return
+    }
+    if (request.method === 'GET' && url.pathname === '/models') {
+      try {
+        const catalog = await readModelCatalog(ctx)
+        response.writeHead(200, { ...headers, 'content-type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify(catalog))
+      } catch (error) {
+        response.writeHead(500, { ...headers, 'content-type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({ error: messageOf(error) }))
+      }
       return
     }
     if (request.method !== 'POST' || url.pathname !== '/analyze') {

@@ -26,17 +26,23 @@ const ctx = {
     return undefined
   },
   agentDefaultModel: {
-    currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-v4-flash' }),
+    currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-v4-flash', reasoningEffort: 'max' }),
   },
   llm: {
     listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
-    async listModels() {
-      return [{ provider: 'deepseek', id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' }]
+    async listModels(provider) {
+      return [{
+        provider,
+        id: 'deepseek-v4-flash',
+        name: 'DeepSeek V4 Flash',
+        reasoning: { efforts: [{ id: 'low', name: '低' }, { id: 'high', name: '高' }], defaultEffort: 'low' },
+      }]
     },
     async resolveModelInfo(provider, model) {
       return { provider, id: model, name: 'DeepSeek V4 Flash' }
     },
     async prepareCall(config) {
+      llmCalls.push(config)
       return {
         config,
         stream: () => (async function* () {
@@ -50,6 +56,8 @@ const ctx = {
   connection: { fetch: { register() { return () => {} } } },
   tools: { register() { return () => {} } },
 }
+
+const llmCalls = []
 
 mod.apply(ctx)
 
@@ -78,6 +86,17 @@ assert.equal(preflight.status, 204)
 assert.equal(preflight.headers.get('access-control-allow-origin'), '*')
 console.log('ok  cors preflight')
 
+const catalogResponse = await fetch(`${BASE}/models`)
+assert.equal(catalogResponse.status, 200)
+const catalog = await catalogResponse.json()
+assert.equal(catalog.default.provider, 'deepseek')
+assert.equal(catalog.default.model, 'deepseek-v4-flash')
+assert.equal(catalog.default.reasoningEffort, 'max')
+assert.equal(catalog.providers[0].models[0].reasoning.efforts.length, 2)
+assert.equal(catalog.caps.default.expand, 8_000)
+assert.equal(catalog.caps.max, 16_000)
+console.log('ok  models catalog')
+
 const response = await fetch(`${BASE}/analyze`, {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
@@ -96,6 +115,15 @@ assert.equal(frames[0].provider, 'deepseek')
 assert.ok(frames.some(frame => frame.type === 'delta' && frame.text.includes('结构判断')), 'streamed text')
 assert.equal(frames.at(-1).type, 'done')
 console.log('ok  analyze stream')
+
+const capped = await fetch(`${BASE}/analyze`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ action: 'expand', text: '一段需要扩写的文字。', maxTokens: 20_000 }),
+})
+assert.equal(capped.status, 200)
+assert.equal(llmCalls.at(-1).maxTokens, 16_000, 'output cap is clamped')
+console.log('ok  output cap override')
 
 const invalid = await fetch(`${BASE}/analyze`, {
   method: 'POST',

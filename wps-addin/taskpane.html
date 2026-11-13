@@ -13,7 +13,22 @@
       <h1>文稿审核台</h1>
       <span id="doc-name" class="rd-doc-name" title="当前文档"></span>
     </div>
-    <p class="rd-sub">选中文字 → 审核 → 批注 / 修订替换</p>
+    <p class="rd-sub">选中文字 → 审核 → 批注 / 修订替换；结果会自动保存</p>
+    <details class="rd-settings">
+      <summary>模型 / 推理 / 输出设置 <span id="settings-summary" class="rd-settings-summary"></span></summary>
+      <div class="rd-setting-grid">
+        <label>模型
+          <select id="setting-model"><option value="">（默认：DSH 设置）</option></select>
+        </label>
+        <label>推理等级
+          <select id="setting-effort"><option value="">（默认）</option></select>
+        </label>
+        <label>输出上限
+          <select id="setting-cap"><option value="0">（默认）</option></select>
+        </label>
+      </div>
+      <p id="settings-hint" class="rd-hint">默认使用 DSH 的模型与推理设置；输出上限越高越慢、费用越高。</p>
+    </details>
   </header>
 
   <section class="rd-card">
@@ -38,6 +53,11 @@
     </div>
   </section>
 
+  <div class="rd-filter-row">
+    <div id="filter-tabs" class="rd-filter"></div>
+    <button id="btn-clear" type="button" class="rd-mini rd-clear" title="清空历史结果">清空</button>
+  </div>
+
   <section class="rd-results" id="results"></section>
 
   <footer class="rd-foot">
@@ -49,7 +69,7 @@
       </div>
       <p id="bridge-hint" class="rd-hint">默认连接本机 DSH 的文稿审核桥（127.0.0.1:47831）。</p>
     </details>
-    <p class="rd-hint">替换以 WPS「修订」形式写入，可接受 / 拒绝，或用 ⌘Z 撤销；批注写入文档后可直接编辑。</p>
+    <p class="rd-hint">替换以 WPS「修订」形式写入，可接受 / 拒绝，或用 ⌘Z 撤销；批注写入文档后可直接编辑。结果保存在本机浏览器，重开面板仍可查看。</p>
   </footer>
 
   <div id="toast" class="rd-toast" role="status" aria-live="polite"></div>

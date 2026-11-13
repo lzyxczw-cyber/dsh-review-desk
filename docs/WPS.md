@@ -33,8 +33,11 @@ WPS 文字（真 .docx）
 `index.js` 的 `startWpsBridge(ctx)` 在插件 `install()` 时启动：
 
 - `GET /health` → `{"ok":true,"service":"review-desk-wps-bridge","bridge":"1"}`
+- `GET /models` → 默认模型/推理等级、可选模型（含推理等级）、各动作输出上限
 - `POST /analyze`（JSON，字段同 DSH 面板请求）→ `application/x-ndjson` 流，帧类型：
   `meta` / `stage` / `sources` / `delta` / `warning` / `done` / `error`
+- 请求可选字段：`provider` / `model` / `reasoningEffort` / `maxTokens`（1000–16000，0 或省略用动作默认）
+- 默认输出上限：来源/逻辑/关联/要求 6000 tokens，扩写 8000 tokens
 - CORS：`access-control-allow-origin: *`（回环，无需凭据）
 - Body 上限 4 MB，单次审核超时 180 s
 - 环境变量：`REVIEW_DESK_WPS_BRIDGE=0` 关闭；`REVIEW_DESK_WPS_BRIDGE_PORT` 改端口
@@ -61,6 +64,18 @@ curl -N http://127.0.0.1:47831/analyze \
 | 撤销 / 重做（`Document.Undo` / `Document.Redo`） | ✅ |
 | `SaveAs2` 另存 docx、`ExportAsFixedFormat` 导出 PDF | ✅（沙盒内路径） |
 | 任务窗格 → 本机 HTTP（fetch，CORS） | ✅ |
+| **v0.2 端到端**：扩写 695 字 → 定位 → 批注 683 字 → 修订替换 365 字 → **撤销替换（拒绝 2 个修订，正文长度/上下文/范围全部还原）** → 追加要求 240 字 | ✅ |
+| **v0.2 面板工作流**（jsdom）：历史持久化/筛选/折叠、追加要求链、输出触顶重试、模型/推理/上限设置随请求发送 | ✅ |
+
+验证产物：`wps-review-demo/evidence/v0.2/`（report-v0.2.jsonl、wps-review-desk-verify-v0.2.docx，含 `<w:ins>`×7、`<w:del>`×5、批注）。
+
+## 面板工作流（v0.2）
+
+- 结果历史保存在本机 localStorage（最多 20 条），支持按动作筛选、折叠/展开、清空；
+- 任意结果可「追加要求」继续修改（custom + revise），形成修订链；
+- 替换原文以 `TrackRevisions` 写入；「撤销替换」会拒绝覆盖该范围的修订并还原原文（失败时提示用 WPS 撤销）；
+- 「定位回原文」选中并滚动到文档中的原文位置；
+- 顶部设置可选择 DSH 里的模型通道、推理等级和输出上限；触顶时提供「提高输出上限重试」。
 
 ## 已知风险
 

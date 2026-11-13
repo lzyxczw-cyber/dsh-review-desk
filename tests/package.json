@@ -5,9 +5,10 @@
   "type": "module",
   "description": "Behavioural checks for the Review Desk DSH plugin.",
   "scripts": {
-    "test": "npm run test:host && npm run test:client",
+    "test": "npm run test:host && npm run test:client && npm run test:wps",
     "test:host": "node host-test.mjs && node bridge-test.mjs",
-    "test:client": "node client-test.mjs"
+    "test:client": "node client-test.mjs",
+    "test:wps": "node wps-panel-test.mjs"
   },
   "dependencies": {
     "jsdom": "^24.1.3",
