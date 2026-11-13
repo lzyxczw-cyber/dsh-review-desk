@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({
     /** Id shared by the sidebar entry and the main panel it opens. */
     const PANEL_ID = 'review-desk'
     /** Build tag, surfaced in the page attribute and the console. */
-    const BUILD = '2026-11-13.13'
+    const BUILD = '2026-11-13.14'
     /** Locale namespace owned by this plugin. */
     const NS = 'reviewDesk'
     /** Authenticated route the Host half registered. */
@@ -2790,8 +2790,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
   flex: 1;
   min-height: 0;
   width: 100%;
-  max-width: 720px;
-  margin: 0 auto;
+  margin: 0;
   display: flex;
   flex-direction: column;
 }
