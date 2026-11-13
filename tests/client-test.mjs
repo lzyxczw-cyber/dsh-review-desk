@@ -266,6 +266,21 @@ async function setModeOn(container, mode) {
   }
 }
 
+async function confirmReplace(page) {
+  let dialog = page.container.querySelector('.rd-dialog')
+  for (let tick = 0; tick < 12 && dialog === null; tick += 1) {
+    await flush(2)
+    dialog = page.container.querySelector('.rd-dialog')
+  }
+  assert.ok(dialog, 'a replacement asks for confirmation')
+  const apply = queryAll(dialog, '.rd-button').find(node => node.textContent === '替换')
+  assert.ok(apply, 'confirm button present')
+  console.log('[debug] confirm buttons:', queryAll(dialog, '.rd-button').map(node => node.textContent).join('|'))
+  click(apply)
+  await flush(6)
+  console.log('[debug] after confirm:', JSON.stringify(page.container.querySelector('textarea.rd-text')?.value))
+}
+
 async function setMode(page, mode) {
   await setModeOn(page.container, mode)
 }
@@ -437,6 +452,7 @@ await test('expansion offers a replacement and applies it to the manuscript', as
   assert.ok(insert, 'replace action offered')
   click(insert)
   await flush()
+  await confirmReplace(page)
 
   const updated = page.container.querySelector('textarea.rd-text')
   assert.ok(!updated.value.includes(original), 'original passage replaced')
@@ -554,6 +570,7 @@ await test('imports a .docx package into the manuscript', async () => {
   const page = mount()
   await page.render()
   await importFile(page, '季度工作报告.docx', buildDocx(['第一段：这是从 Word 导入的文稿。', '第二段：科技金融实践。']))
+  await setMode(page, 'edit')
   const preview = page.container.querySelector('.rd-preview')
   assert.ok(preview, 'imports render straight into the preview')
   assert.ok(preview.textContent.includes('第一段：这是从 Word 导入的文稿。'), preview.textContent)
@@ -861,6 +878,7 @@ await test('an imported .docx keeps headings, bold, lists, and tables', async ()
     '<w:tr><w:tc><w:p><w:r><w:t>余额</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>42.6</w:t></w:r></w:p></w:tc></w:tr></w:tbl>',
   ].join('')
   await importFile(page, '制度.docx', buildDocxBody(body))
+  await setMode(page, 'edit')
   assert.ok(page.container.querySelector('.rd-preview'), 'document imported')
   await setMode(page, 'source')
   const field = page.container.querySelector('textarea.rd-text')
@@ -1015,6 +1033,7 @@ await test('a rewrite from a custom requirement replaces the passage and can be 
   await flush(2)
   click(page.container.querySelector('.rd-run-custom'))
   await flush(6)
+  await confirmReplace(page)
 
   const value = page.container.querySelector('textarea.rd-text').value
   assert.ok(value.includes('改写后的段落。'), value)
@@ -1059,6 +1078,7 @@ await test('an existing result can be revised with an extra requirement', async 
   await flush(2)
   click(page.container.querySelector('.rd-run-custom'))
   await flush(6)
+  await confirmReplace(page)
   assert.ok(page.container.querySelector('textarea.rd-text').value.includes('第一版改写。'))
 
   const revise = queryAll(page.container, '.rd-mini').find(node => node.textContent === '修改')
@@ -1076,6 +1096,7 @@ await test('an existing result can be revised with an extra requirement', async 
   await flush(2)
   click(card.querySelector('.rd-revise-run'))
   await flush(8)
+  await confirmReplace(page)
 
   assert.equal(seen.length, 2)
   assert.equal(seen[1].revise, true)
@@ -1112,6 +1133,7 @@ await test('the replace switch decides whether a plain answer touches the manusc
     await flush(2)
     click(page.container.querySelector('.rd-run-custom'))
     await flush(8)
+    if (page.container.querySelector('.rd-dialog') !== null) await confirmReplace(page)
   }
 
   const page = mount({
@@ -1168,6 +1190,7 @@ await test('a rewrite word in the requirement replaces without the switch', asyn
   await flush(2)
   click(page.container.querySelector('.rd-run-custom'))
   await flush(8)
+  await confirmReplace(page)
   const value = page.container.querySelector('textarea.rd-text').value
   assert.ok(value.includes('压缩后的句子。'), value)
   assert.ok(!value.includes('第一段内容。'))

@@ -105,8 +105,8 @@ assert.ok(analyzeRoute, 'analyze route registered')
 assert.deepEqual(analyzeRoute.methods, ['POST'])
 assert.deepEqual(
   [...registered.routes.keys()].sort(),
-  ['/api/review-desk/analyze', '/api/review-desk/original-pages'],
-  'this plugin owns the analyze and original-page routes',
+  ['/api/review-desk/analyze', '/api/review-desk/engine', '/api/review-desk/original-pages'],
+  'this plugin owns the analyze, engine-asset, and original-page routes',
 )
 assert.ok(registered.tool, 'tool registered')
 assert.equal(registered.tool.name, 'review_manuscript')
@@ -464,6 +464,23 @@ async function analyze(payload) {
   assert.equal(wrong.response.status, 400)
   assert.match(JSON.parse(wrong.text).error, /custom/)
   console.log('ok  revision')
+}
+
+
+{
+  const engineRoute = registered.routes.get('/api/review-desk/engine')
+  assert.ok(engineRoute, 'engine asset route registered')
+  const ok = await engineRoute.fetch(new Request('http://x/api/review-desk/engine?name=superdoc.js'))
+  assert.equal(ok.status, 200)
+  assert.ok((ok.headers.get('content-type') ?? '').includes('javascript'), ok.headers.get('content-type'))
+  assert.ok((await ok.text()).length > 1000, 'the bundle is served')
+  const css = await engineRoute.fetch(new Request('http://x/api/review-desk/engine?name=superdoc.css'))
+  assert.equal(css.status, 200)
+  assert.ok((css.headers.get('content-type') ?? '').includes('text/css'))
+  const missing = await engineRoute.fetch(new Request('http://x/api/review-desk/engine?name=..%2Findex.js'))
+  assert.equal(missing.status, 404, 'only declared names are served')
+  const wrongMethod = await engineRoute.fetch(new Request('http://x/api/review-desk/engine?name=superdoc.js', { method: 'POST' }))
+  assert.equal(wrongMethod.status, 405)
 }
 
 console.log('\nall host checks passed')

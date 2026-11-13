@@ -12,11 +12,14 @@
  * actually given instead of recalled links.
  */
 
+import { readFile } from 'node:fs/promises'
+
 /** Authenticated route this half owns on the shared `/api` channel. */
 const ROUTE_PATH = '/api/review-desk/analyze'
 
 /** Renders the original document's pages, for the faithful layout view. */
 const PAGES_PATH = '/api/review-desk/original-pages'
+const ENGINE_PATH = '/api/review-desk/engine'
 
 /** Bounds of one original-page render; totals stay inside one JSON response. */
 const PAGE_RENDER = {
@@ -677,6 +680,35 @@ async function handlePagesRequest(ctx, request) {
   }
 }
 
+/**
+ * Browser engine assets shipped with the plugin. Names are fixed, so the route
+ * can serve only these files from this package.
+ */
+const ENGINE_ASSETS = {
+  'superdoc.js': { file: 'superdoc.js', type: 'text/javascript; charset=utf-8' },
+  'superdoc.css': { file: 'superdoc.css', type: 'text/css; charset=utf-8' },
+}
+
+async function handleEngineRequest(request) {
+  if (request.method !== 'GET') return new Response(null, { status: 405, headers: { allow: 'GET' } })
+  const name = new URL(request.url).searchParams.get('name') ?? ''
+  const asset = Object.hasOwn(ENGINE_ASSETS, name) ? ENGINE_ASSETS[name] : undefined
+  if (asset === undefined) return new Response('not found', { status: 404 })
+  try {
+    const bytes = await readFile(new URL(`./vendor/superdoc/${asset.file}`, import.meta.url))
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        'content-type': asset.type,
+        'content-length': String(bytes.length),
+        'cache-control': 'public, max-age=3600',
+      },
+    })
+  } catch (error) {
+    return new Response(`engine asset unavailable: ${messageOf(error)}`, { status: 500 })
+  }
+}
+
 /** Register the routes and the agent tool on a context that has the model services. */
 function install(ctx) {
   ctx.effect(
@@ -697,6 +729,15 @@ function install(ctx) {
       fetch: request => handlePagesRequest(ctx, request),
     }),
     'review-desk: original pages route',
+  )
+
+  ctx.effect(
+    () => ctx.connection.fetch.register({
+      path: ENGINE_PATH,
+      methods: ['GET'],
+      fetch: request => handleEngineRequest(request),
+    }),
+    'review-desk: browser engine assets',
   )
 
   ctx.effect(

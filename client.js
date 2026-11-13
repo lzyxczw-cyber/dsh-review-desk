@@ -12,7 +12,9 @@ window.__ModuleLoader__.load({
     /** Id shared by the sidebar entry and the main panel it opens. */
     const PANEL_ID = 'review-desk'
     /** Build tag, surfaced in the page attribute and the console. */
-    const BUILD = '2026-11-13.11'
+    const BUILD = '2026-11-13.11-engine.1'
+    /** Engine branch: replacements are confirmed in a local dialog, never applied silently. */
+    const CONFIRM_REPLACE = true
     /** Locale namespace owned by this plugin. */
     const NS = 'reviewDesk'
     /** Authenticated route the Host half registered. */
@@ -133,6 +135,14 @@ window.__ModuleLoader__.load({
       modeEdit: '编辑',
       modeSource: '源码',
       modePreview: '预览',
+      modeDoc: '文档',
+      engineFailed: '排版引擎加载失败：',
+      replaceDialogTitle: '确认替换原文',
+      replaceDialogBody: '只有确认后才会改动文稿，取消则文稿保持不变。',
+      replaceDialogOld: '原文',
+      replaceDialogNew: '替换为',
+      replaceDialogApply: '替换',
+      replaceApplied: '已替换原文',
       blockEditHint: '点任意位置直接改字，点别处自动保存；表格单元格同样可直接编辑，Enter 换行，格式用「源码」调整。',
       blockCommit: '完成',
       blockCancel: '取消',
@@ -295,6 +305,14 @@ window.__ModuleLoader__.load({
       modeEdit: 'Edit',
       modeSource: 'Source',
       modePreview: 'Preview',
+      modeDoc: 'Document',
+      engineFailed: 'The layout engine failed to load: ',
+      replaceDialogTitle: 'Replace the passage',
+      replaceDialogBody: 'The manuscript changes only after you confirm; cancel leaves it untouched.',
+      replaceDialogOld: 'Before',
+      replaceDialogNew: 'After',
+      replaceDialogApply: 'Replace',
+      replaceApplied: 'Passage replaced',
       blockEditHint: 'Click anywhere to edit in place; it saves when you click away. Table cells edit the same way, Enter adds a line, and formatting lives in Source.',
       blockCommit: 'Done',
       blockCancel: 'Cancel',
@@ -2323,6 +2341,7 @@ window.__ModuleLoader__.load({
       if (run.action !== 'custom' && run.revise !== true) return
       const body = rewriteBody(run.raw, forced)
       if (body === '') return
+      if (CONFIRM_REPLACE) return
       replacePassage(runId, body, { appendWhenStale: false })
     }
 
@@ -2491,6 +2510,12 @@ window.__ModuleLoader__.load({
     const ACTION_ORDER = ['source', 'logic', 'expand', 'relate']
     /** Result tabs: the four analyses plus free-form instructions. */
     const ACTION_TABS = [...ACTION_ORDER, 'custom']
+
+    /** A short single-line excerpt for confirmation dialogs. */
+    function excerpt(text, limit = 160) {
+      const flat = String(text ?? '').replace(/\s+/gu, ' ').trim()
+      return flat.length <= limit ? flat : `${flat.slice(0, limit)}…`
+    }
 
     /** Underline palette: one colour per action, shared by marks, tabs, and cards. */
     const ACTION_COLORS = { source: true, logic: true, expand: true, relate: true, custom: true }
@@ -2850,6 +2875,28 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
   background: color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent);
   box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent);
 }
+
+/* DOCX engine surface (experimental branch) ---------------------------- */
+.rd-doc-engine {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.rd-engine {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--dsw-alias-bg-l2);
+  border-radius: 10px;
+}
+.rd-engine ::highlight(rd-source) { text-decoration: underline 2px var(--rd-act-source); }
+.rd-engine ::highlight(rd-logic) { text-decoration: underline 2px var(--rd-act-logic); }
+.rd-engine ::highlight(rd-expand) { text-decoration: underline 2px var(--rd-act-expand); }
+.rd-engine ::highlight(rd-relate) { text-decoration: underline 2px var(--rd-act-relate); }
+.rd-engine ::highlight(rd-custom) { text-decoration: underline 2px var(--rd-act-custom); }
 
 /* Action colour dots -------------------------------------------------- */
 .rd-act-dot {
@@ -3280,6 +3327,30 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
 .rd-dialog-body { margin: 0 0 6px; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-primary); }
 .rd-dialog-note { margin: 0 0 16px; font-size: 11.5px; line-height: 17px; color: var(--dsw-alias-label-secondary); }
 .rd-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.rd-dialog-label {
+  margin: 12px 0 4px;
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dsw-alias-label-secondary);
+}
+.rd-dialog-quote {
+  max-height: 132px;
+  overflow: auto;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-base);
+  font-size: 12.5px;
+  line-height: 19px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.rd-dialog-quote-new {
+  border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 32%, var(--dsw-alias-border-l2));
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 5%, var(--dsw-alias-bg-base));
+}
 
 /* Model menu ---------------------------------------------------------- */
 .rd-model { position: relative; }
@@ -3741,9 +3812,11 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
     }
 
     /** Compact segmented control for the manuscript column. */
-    function ModeToggle({ t, mode, onChange, disabled }) {
+    function ModeToggle({ t, mode, onChange, disabled, engine }) {
+      const items = [['edit', t('modeEdit')], ['source', t('modeSource')], ['preview', t('modePreview')]]
+      if (engine === true) items.push(['doc', t('modeDoc')])
       return h('div', { className: 'rd-segmented', role: 'group', 'aria-label': t('modeName') },
-        [['edit', t('modeEdit')], ['source', t('modeSource')], ['preview', t('modePreview')]].map(([value, label]) => h('button', {
+        items.map(([value, label]) => h('button', {
           key: value,
           type: 'button',
           className: 'rd-segment',
@@ -3752,6 +3825,139 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
           disabled,
           onClick: () => onChange(value),
         }, label)))
+    }
+
+    /** Browser engine assets served by the host half. */
+    const ENGINE_JS = '/api/review-desk/engine?name=superdoc.js'
+    const ENGINE_CSS = '/api/review-desk/engine?name=superdoc.css'
+    let engineLoad = null
+
+    /** Load the DOCX engine once; resolves with its constructor. */
+    function loadEngine() {
+      if (engineLoad !== null) return engineLoad
+      engineLoad = new Promise((resolve, reject) => {
+        if (typeof window.SuperDoc === 'function') {
+          resolve(window.SuperDoc)
+          return
+        }
+        const link = document.createElement('link')
+        link.rel = 'stylesheet'
+        link.href = ENGINE_CSS
+        document.head.append(link)
+        const script = document.createElement('script')
+        script.src = ENGINE_JS
+        script.async = true
+        script.onload = () => {
+          if (typeof window.SuperDoc === 'function') resolve(window.SuperDoc)
+          else reject(new Error('engine did not register'))
+        }
+        script.onerror = () => reject(new Error('engine failed to load'))
+        document.head.append(script)
+      })
+      return engineLoad
+    }
+
+    /** First occurrence of `needle` in `text`, ignoring runs of whitespace. */
+    function locatePassage(text, needle) {
+      const wanted = needle.replace(/\s+/gu, ' ').trim()
+      if (wanted === '') return null
+      const flat = text.replace(/\s+/gu, ' ')
+      const at = flat.indexOf(wanted)
+      if (at < 0) return null
+      // Map the collapsed offset back to the original string.
+      let source = 0
+      let collapsed = 0
+      while (source < text.length && collapsed < at) {
+        if (/\s/u.test(text[source])) {
+          while (source < text.length && /\s/u.test(text[source])) source += 1
+          collapsed += 1
+        } else {
+          source += 1
+          collapsed += 1
+        }
+      }
+      const start = source
+      return { start, end: start + wanted.length }
+    }
+
+    /** Highlight reviewed ranges inside the engine's rendered document. */
+    function paintEngineMarks(host, marks, markTitle) {
+      if (typeof CSS === 'undefined' || CSS.highlights === undefined || typeof Highlight !== 'function') return
+      const groups = new Map()
+      const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT)
+      const nodes = []
+      while (walker.nextNode() !== null) nodes.push(walker.currentNode)
+      for (const [index, mark] of marks.entries()) {
+        const needle = mark.text
+        for (const node of nodes) {
+          const at = node.nodeValue === null ? -1 : node.nodeValue.indexOf(needle)
+          if (at < 0) continue
+          const range = document.createRange()
+          range.setStart(node, at)
+          range.setEnd(node, at + needle.length)
+          const actions = mark.runs.map(run => run.action).filter(action => ACTION_COLORS[action] !== undefined)
+          for (const action of new Set(actions)) {
+            const list = groups.get(action) ?? []
+            list.push(range)
+            groups.set(action, list)
+          }
+          break
+        }
+        void index
+      }
+      for (const [action, ranges] of groups) {
+        CSS.highlights.set(`rd-${action}`, new Highlight(...ranges))
+      }
+    }
+
+    /** The DOCX engine surface: read-only layout, marks, selection back to the text model. */
+    function DocEngine({ file, t, marks, onSelect, onFail }) {
+      const hostRef = useRef(null)
+      const [failed, setFailed] = useState('')
+      useEffect(() => {
+        let instance = null
+        let disposed = false
+        const host = hostRef.current
+        if (host === null) return undefined
+        const id = `rd-engine-${Math.random().toString(36).slice(2, 9)}`
+        host.id = id
+        loadEngine()
+          .then((SuperDoc) => {
+            if (disposed) return
+            try {
+              instance = new SuperDoc({
+                selector: `#${id}`,
+                document: file,
+                documentMode: 'viewing',
+                onReady: () => { paintEngineMarks(host, marks, () => '') },
+              })
+            } catch (error) {
+              setFailed(error instanceof Error ? error.message : String(error))
+              onFail?.(error)
+            }
+          })
+          .catch((error) => {
+            setFailed(error instanceof Error ? error.message : String(error))
+            onFail?.(error)
+          })
+        return () => {
+          disposed = true
+          try { instance?.destroy?.() } catch { /* teardown is best effort */ }
+        }
+      }, [file, marks, onFail])
+
+      return h('div', { className: 'rd-doc-engine' },
+        failed === ''
+          ? null
+          : h('p', { className: 'rd-card-note', role: 'status' }, `${t('engineFailed')}${failed}`),
+        h('div', {
+          className: 'rd-engine',
+          ref: hostRef,
+          onMouseUp: () => {
+            const selected = window.getSelection()?.toString() ?? ''
+            onSelect(selected)
+          },
+        }))
     }
 
     /** A compact toolbar menu: label plus a list of secondary actions. */
@@ -4154,6 +4360,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
       const [replaceIntent, setReplaceIntent] = useState(readReplaceIntent)
       const [widths, setWidths] = useState(readWidths)
       const [pendingPackage, setPendingPackage] = useState(null)
+      const [pendingReplace, setPendingReplace] = useState(null)
       const [highlight, setHighlight] = useState({ ids: [], nonce: 0 })
       const [frozen, setFrozen] = useState(null)
       const [dragging, setDragging] = useState('')
@@ -4667,6 +4874,10 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
       }, [showNotice, t])
 
       const insertRun = useCallback((run, body) => {
+        if (CONFIRM_REPLACE) {
+          setPendingReplace({ run, body })
+          return
+        }
         const current = store.get().text
         const matches = run.wholeDocument === true
           || (Number.isInteger(run.selection.start)
@@ -4681,6 +4892,37 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
         setViewMode('source')
         setSelection({ ...range, text: body })
         showNotice(matches ? t('replacedNotice') : t('appendedNotice'))
+      }, [showNotice, t])
+
+      // On this branch a finished rewrite asks before touching the manuscript.
+      const askedReplace = useRef(new Set())
+      useEffect(() => {
+        if (!CONFIRM_REPLACE) return
+        for (const run of runs) {
+          if (run.status !== 'done' || run.replaced !== null) continue
+          if (run.action !== 'custom' && run.revise !== true) continue
+          if (askedReplace.current.has(run.id)) continue
+          const body = rewriteBody(run.raw, run.forceReplace === true || run.revise === true)
+          if (body === '') continue
+          askedReplace.current.add(run.id)
+          setPendingReplace({ run, body })
+          break
+        }
+      }, [runs])
+
+      /** Apply a confirmed replacement through the shared path. */
+      const applyReplace = useCallback((pending) => {
+        if (pending === null) return
+        setPendingReplace(null)
+        const current = store.get().text
+        const { run } = pending
+        const range = replacePassage(run.id, pending.body, { appendWhenStale: true })
+        if (range === null) {
+          showNotice(t('failed'))
+          return
+        }
+        setSelection({ ...range, text: pending.body })
+        showNotice(t('replaceApplied'))
       }, [showNotice, t])
 
       const undoRunReplace = useCallback((run) => {
@@ -4930,7 +5172,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
             ? { name: file.name, file }
             : null)
           setPages(null)
-          setViewMode('edit')
+          setViewMode(extension === 'docx' || extension === 'docm' ? 'doc' : 'edit')
           showNotice(extension === 'docx' || extension === 'docm' || extension === 'pdf'
             ? t('importFormatKept')
             : t('imported'))
@@ -5026,13 +5268,17 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
         showNotice(t('importedPackage'))
       }, [pendingPackage, showNotice, t])
 
-      // Escape closes the import confirmation.
+      // Escape closes either confirmation.
       useEffect(() => {
-        if (pendingPackage === null) return undefined
-        const cancel = (event) => { if (event.key === 'Escape') setPendingPackage(null) }
+        if (pendingPackage === null && pendingReplace === null) return undefined
+        const cancel = (event) => {
+          if (event.key !== 'Escape') return
+          setPendingPackage(null)
+          setPendingReplace(null)
+        }
         document.addEventListener('keydown', cancel)
         return () => document.removeEventListener('keydown', cancel)
-      }, [pendingPackage])
+      }, [pendingPackage, pendingReplace])
 
       const onClear = useCallback(() => {
         if (!armClear()) return
@@ -5141,6 +5387,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
                   mode: viewMode,
                   onChange: changeMode,
                   disabled: snapshot.text.trim() === '',
+                  engine: original !== null && ['docx', 'docm'].includes((original.name.split('.').pop() ?? '').toLowerCase()),
                 }))),
             h('div', { className: 'rd-doc-body' },
               h('div', { className: 'rd-doc-inner' },
@@ -5205,6 +5452,18 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
                             revealAtOffset(field.selectionStart ?? 0)
                           },
                         }))
+                      : viewMode === 'doc' && original !== null
+                        ? h(DocEngine, {
+                          file: original.file,
+                          t,
+                          marks,
+                          onSelect: (selected) => {
+                            const found = locatePassage(snapshot.text, selected)
+                            if (found === null) return
+                            setSelection({ ...found, text: snapshot.text.slice(found.start, found.end) })
+                          },
+                          onFail: () => {},
+                        })
                       : h('div', {
                         className: 'rd-preview rd-blocks',
                         ref: blocksRef,
@@ -5414,6 +5673,31 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
                   autoFocus: true,
                   onClick: confirmImportPackage,
                 }, t('packageImportConfirm')))))
+          : null,
+
+        pendingReplace !== null
+          ? h('div', { className: 'rd-mask', role: 'presentation' },
+            h('div', { className: 'rd-dialog', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'rd-replace-title' },
+              h('h2', { id: 'rd-replace-title', className: 'rd-dialog-title' }, t('replaceDialogTitle')),
+              h('p', { className: 'rd-dialog-note' }, t('replaceDialogBody')),
+              h('p', { className: 'rd-dialog-label' }, t('replaceDialogOld')),
+              h('div', { className: 'rd-dialog-quote' },
+                excerpt(pendingReplace.run.wholeDocument === true ? snapshot.text : pendingReplace.run.selection.text)),
+              h('p', { className: 'rd-dialog-label' }, t('replaceDialogNew')),
+              h('div', { className: 'rd-dialog-quote rd-dialog-quote-new' }, excerpt(pendingReplace.body)),
+              h('div', { className: 'rd-dialog-actions' },
+                h('button', {
+                  type: 'button',
+                  className: 'rd-button',
+                  onClick: () => setPendingReplace(null),
+                }, t('packageImportCancel')),
+                h('button', {
+                  type: 'button',
+                  className: 'rd-button',
+                  'data-variant': 'primary',
+                  autoFocus: true,
+                  onClick: () => applyReplace(pendingReplace),
+                }, t('replaceDialogApply')))))
           : null,
 
         sheetOpen
