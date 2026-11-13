@@ -10,7 +10,7 @@
   var DEFAULT_BRIDGE = 'http://127.0.0.1:47831'
   var BRIDGE_KEY = 'wps-review-desk.bridge'
   var SETTINGS_KEY = 'wps-review-desk.settings.v2'
-  var HISTORY_KEY = 'wps-review-desk.history.v2'
+  var HISTORY_KEY = 'wps-review-desk.history.v3'
   var HISTORY_LIMIT = 100
   var HISTORY_BYTES = 900000
   var VERIFY = /[?&]verify=1(?:&|$)/.test(window.location.search)

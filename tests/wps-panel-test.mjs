@@ -15,7 +15,7 @@ const here = path.dirname(new URL(import.meta.url).pathname)
 const PANEL_DIR = path.join(here, '..', 'wps-addin')
 const HTML = fs.readFileSync(path.join(PANEL_DIR, 'taskpane.html'), 'utf8')
 const SCRIPT = fs.readFileSync(path.join(PANEL_DIR, 'taskpane.js'), 'utf8')
-const HISTORY_KEY = 'wps-review-desk.history.v2'
+const HISTORY_KEY = 'wps-review-desk.history.v3'
 const SETTINGS_KEY = 'wps-review-desk.settings.v2'
 
 const BASE_TEXT = '第一段：这是用于测试的原文。\n第二段：后续内容。'
