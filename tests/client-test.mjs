@@ -892,7 +892,7 @@ function seedRun(id, action, raw, extra = {}) {
     effort: extra.effort ?? '',
     instruction: extra.instruction ?? '',
     wholeDocument: false,
-    selection: { start: 0, end: 6, text: '第一段内容' },
+    selection: { start: 0, end: 5, text: '第一段内容' },
     startedAt: Date.now() - 5000,
     finishedAt: Date.now() - 3000,
   }
@@ -1305,6 +1305,69 @@ await test('an invalid package is refused without touching the document', async 
   assert.ok(page.container.querySelector('textarea.rd-text').value.includes('保留的内容。'))
   const toast = page.container.querySelector('.rd-toast')
   assert.ok(toast.textContent.includes('不是有效的审核包'), toast.textContent)
+  await page.unmount()
+})
+
+
+await test('clicking a reviewed passage reveals and highlights every result behind it', async () => {
+  const passage = { start: 0, end: 5, text: '第一段内容' }
+  const page = mount({
+    seed: {
+      title: '划线',
+      text: '第一段内容。\n\n第二段内容。',
+      runs: [
+        { ...seedRun('r2', 'logic', '### 结构判断\n第二条结论。'), selection: passage },
+        { ...seedRun('r1', 'source', '### 核查结论\n第一条结论。'), selection: passage },
+      ],
+    },
+  })
+  await page.render()
+  await setMode(page, 'preview')
+  const mark = page.container.querySelector('.rd-md-preview .rd-mark')
+  assert.ok(mark, 'reviewed passage is marked in the preview')
+  assert.equal(mark.getAttribute('data-mark'), '0')
+  assert.ok((mark.getAttribute('title') ?? '').includes('2'), `tooltip counts both results: ${mark.getAttribute('title')}`)
+
+  // A filter must give way so the targets are visible.
+  const logicTab = queryAll(page.container, '.rd-tab').find(node => node.textContent.startsWith('逻辑分析'))
+  click(logicTab)
+  await flush()
+  assert.equal(queryAll(page.container, '.rd-card').length, 1)
+
+  click(mark)
+  await flush(4)
+  const highlighted = queryAll(page.container, '.rd-card[data-highlighted]')
+  assert.equal(highlighted.length, 2, 'both operations on the passage are highlighted')
+  const ids = highlighted.map(node => node.getAttribute('data-run')).sort()
+  assert.deepEqual(ids, ['r1', 'r2'])
+  assert.equal(queryAll(page.container, '.rd-card').length, 2, 'the filter switched to all')
+  assert.equal(queryAll(page.container, '.rd-card-body').length, 2, 'both cards opened')
+  await page.unmount()
+})
+
+await test('clicking a reviewed passage in the editor reveals its results too', async () => {
+  const page = mount({
+    seed: {
+      title: '编辑态',
+      text: '第一段内容。\n\n第二段内容。',
+      runs: [{ ...seedRun('r1', 'logic', '### 结构判断\n一条结论。'), selection: { start: 0, end: 5, text: '第一段内容' } }],
+    },
+  })
+  await page.render()
+  const field = page.container.querySelector('textarea.rd-text')
+  field.selectionStart = 3
+  field.selectionEnd = 3
+  await act(async () => { field.dispatchEvent(new window.MouseEvent('click', { bubbles: true })) })
+  await flush(3)
+  assert.equal(queryAll(page.container, '.rd-card[data-highlighted]').length, 1, 'marked passage opens its result')
+
+  // A click outside every mark leaves the list alone.
+  field.selectionStart = 10
+  field.selectionEnd = 10
+  await flush(2800)
+  await act(async () => { field.dispatchEvent(new window.MouseEvent('click', { bubbles: true })) })
+  await flush(2)
+  assert.equal(queryAll(page.container, '.rd-card[data-highlighted]').length, 0, 'clicking plain text does nothing')
   await page.unmount()
 })
 

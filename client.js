@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({
     /** Id shared by the sidebar entry and the main panel it opens. */
     const PANEL_ID = 'review-desk'
     /** Build tag, surfaced in the page attribute and the console. */
-    const BUILD = '2026-11-13.7'
+    const BUILD = '2026-11-13.8'
     /** Locale namespace owned by this plugin. */
     const NS = 'reviewDesk'
     /** Authenticated route the Host half registered. */
@@ -118,6 +118,8 @@ window.__ModuleLoader__.load({
       selectFirst: '先选中文字',
       selectFirstAction: '选中第一段',
       reviewedBlocks: '已审阅',
+      markResults: '这条划线有 {count} 条结果，点击可查看',
+      markJumped: '已跳到对应结果',
       tabAll: '全部',
       expandCard: '展开',
       collapseCard: '收起',
@@ -272,6 +274,8 @@ window.__ModuleLoader__.load({
       selectFirst: 'Select text first',
       selectFirstAction: 'Select first paragraph',
       reviewedBlocks: 'Reviewed',
+      markResults: '{count} result(s) cover this passage; click to view',
+      markJumped: 'Jumped to the matching results',
       tabAll: 'All',
       expandCard: 'Expand',
       collapseCard: 'Collapse',
@@ -1218,7 +1222,7 @@ window.__ModuleLoader__.load({
       return out
     }
 
-    function runsToNodes(runs, keyPrefix, marks) {
+    function runsToNodes(runs, keyPrefix, marks, markTitle) {
       return splitRunsAtMarks(runs, marks)
         .filter(run => run.text !== '')
         .map((run, index) => {
@@ -1228,6 +1232,7 @@ window.__ModuleLoader__.load({
             className: [run.italic && run.bold ? 'rd-em' : '', run.strike ? 'rd-del' : '',
               run.mark >= 0 ? 'rd-mark' : ''].filter(Boolean).join(' ') || undefined,
             ...(run.mark >= 0 ? { 'data-mark': run.mark } : {}),
+            ...(run.mark >= 0 && markTitle !== undefined ? { title: markTitle(run.mark) } : {}),
           }
           if (run.href !== undefined) {
             return h('a', { ...props, href: run.href, target: '_blank', rel: 'noreferrer noopener' }, run.text)
@@ -1343,12 +1348,12 @@ window.__ModuleLoader__.load({
     }
 
     /** Render parsed blocks; every visible character keeps its source offset. */
-    function renderPreview(text, marks) {
+    function renderPreview(text, marks, markTitle) {
       const blocks = parseBlocks(text)
       const blockNodes = blocks.map((block, blockIndex) => {
         const key = `b${blockIndex}`
         const lineNodes = (lines, prefix) => lines.flatMap((line, lineIndex) => {
-          const nodes = runsToNodes(inlineRuns(line.text, line.start), `${prefix}-${lineIndex}`, marks)
+          const nodes = runsToNodes(inlineRuns(line.text, line.start), `${prefix}-${lineIndex}`, marks, markTitle)
           return lineIndex === 0 ? nodes : [h('br', { key: `${prefix}-br${lineIndex}` }), ...nodes]
         })
 
@@ -1365,19 +1370,19 @@ window.__ModuleLoader__.load({
             const head = block.rows.filter(row => row.header)
             const body = block.rows.filter(row => !row.header)
             const cell = (value, cellIndex) => h('td', { key: `c${cellIndex}` },
-              runsToNodes(inlineRuns(value.text, value.start), `${key}-${cellIndex}`, marks))
+              runsToNodes(inlineRuns(value.text, value.start), `${key}-${cellIndex}`, marks, markTitle))
             return h('div', { key, className: 'rd-table-wrap' },
               h('table', null,
                 head.length === 0 ? null : h('thead', null, head.map((row, rowIndex) => h('tr', { key: `h${rowIndex}` },
                   row.cells.map((value, cellIndex) => h('th', { key: `c${cellIndex}` },
-                    runsToNodes(inlineRuns(value.text, value.start), `${key}-h${rowIndex}-${cellIndex}`, marks)))))),
+                    runsToNodes(inlineRuns(value.text, value.start), `${key}-h${rowIndex}-${cellIndex}`, marks, markTitle)))))),
                 body.length === 0 ? null : h('tbody', null, body.map((row, rowIndex) => h('tr', { key: `b${rowIndex}` },
                   row.cells.map((value, cellIndex) => cell(value, cellIndex)))))))
           }
           case 'ul':
           case 'ol':
             return h(block.kind, { key }, block.items.map((item, itemIndex) => h('li', { key: `i${itemIndex}` },
-              runsToNodes(inlineRuns(item.text, item.start), `${key}-${itemIndex}`, marks))))
+              runsToNodes(inlineRuns(item.text, item.start), `${key}-${itemIndex}`, marks, markTitle))))
           default:
             return h('p', { key }, lineNodes(block.lines, key))
         }
@@ -2687,6 +2692,10 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
   border-radius: 4px;
   background: color-mix(in srgb, var(--dsw-alias-brand-primary) 14%, transparent);
   box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--dsw-alias-brand-primary) 40%, transparent);
+  cursor: pointer;
+}
+.rd-md-preview .rd-mark:hover {
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 24%, transparent);
 }
 .rd-table-wrap { margin: 14px 0; max-width: 100%; overflow-x: auto; }
 .rd-md-preview table { border-collapse: collapse; width: 100%; font-size: 14px; line-height: 21px; }
@@ -3123,6 +3132,13 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
   overflow: hidden;
 }
 .rd-card[data-status='error'] { border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, var(--dsw-alias-border-l1)); }
+.rd-card[data-highlighted] {
+  border-color: var(--dsw-alias-brand-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-brand-primary) 32%, transparent);
+}
+.rd-card[data-highlighted] .rd-card-head {
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary) 9%, transparent);
+}
 .rd-card-head {
   display: flex;
   align-items: center;
@@ -3694,7 +3710,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
         h('span', { className: 'rd-source-host' }, hostOf(source.url)))))
     }
 
-    function ResultCard({ run, t, expanded, onToggle, onStop, onRetry, onRemove, onCopy, onInsert, onJump, onUndo, onRevise }) {
+    function ResultCard({ run, t, expanded, highlighted, onToggle, onStop, onRetry, onRemove, onCopy, onInsert, onJump, onUndo, onRevise }) {
       const [revising, setRevising] = useState(false)
       const [draft, setDraft] = useState('')
       const meta = ACTION_META[run.action] ?? ACTION_META.logic
@@ -3743,6 +3759,8 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
       return h('article', {
         className: 'rd-card',
         'data-status': run.status,
+        'data-run': run.id,
+        'data-highlighted': highlighted ? '' : undefined,
         'data-folded': expanded ? undefined : '',
       },
       h('button', {
@@ -3876,6 +3894,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
       const [replaceIntent, setReplaceIntent] = useState(readReplaceIntent)
       const [widths, setWidths] = useState(readWidths)
       const [pendingPackage, setPendingPackage] = useState(null)
+      const [highlight, setHighlight] = useState({ ids: [], nonce: 0 })
       const [dragging, setDragging] = useState('')
       const [filter, setFilter] = useState('all')
       const [expanded, setExpanded] = useState(() => new Set())
@@ -3889,6 +3908,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
       const pageRef = useRef(null)
       const bodyRef = useRef(null)
       const dragRef = useRef(null)
+      const highlightTimer = useRef(0)
       const textRef = useRef(null)
       const previewRef = useRef(null)
       const scrollRef = useRef(null)
@@ -3930,6 +3950,58 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
             : current
         ))
       }, [runs[0]?.replaced])
+
+      /**
+       * Bring one reviewed passage's results into view: clear the filter, open
+       * them, mark them, and scroll the first one into place.
+       */
+      const revealRuns = useCallback((ids) => {
+        const unique = [...new Set(ids)].filter(id => typeof id === 'string' && id !== '')
+        if (unique.length === 0) return
+        setFilter('all')
+        setExpanded((current) => {
+          const next = new Set(current)
+          for (const id of unique) next.add(id)
+          return next
+        })
+        setHighlight(current => ({ ids: unique, nonce: current.nonce + 1 }))
+        if (highlightTimer.current) clearTimeout(highlightTimer.current)
+        highlightTimer.current = setTimeout(() => setHighlight({ ids: [], nonce: 0 }), 2600)
+      }, [])
+
+      useEffect(() => () => {
+        if (highlightTimer.current) clearTimeout(highlightTimer.current)
+      }, [])
+
+      // Scroll after the filtered list has rendered.
+      useEffect(() => {
+        if (highlight.ids.length === 0) return
+        const body = scrollRef.current
+        if (body === null) return
+        const first = body.querySelector(`[data-run="${highlight.ids[0]}"]`)
+        if (first === null) return
+        const top = first.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop - 12
+        const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+        body.scrollTo?.({ top: Math.max(0, top), behavior: reduce ? 'auto' : 'smooth' })
+      }, [highlight])
+
+      /** A click (not a drag) on a reviewed passage opens its results. */
+      const revealAtOffset = useCallback((offset) => {
+        const mark = marks.find(entry => offset >= entry.start && offset < entry.end)
+        if (mark === undefined) return
+        revealRuns(mark.runs.map(run => run.id))
+      }, [marks, revealRuns])
+
+      const onPreviewClick = useCallback((event) => {
+        const target = typeof event.target?.closest === 'function' ? event.target.closest('[data-mark]') : null
+        if (target === null) return
+        const index = Number(target.getAttribute('data-mark'))
+        const mark = Number.isInteger(index) ? marks[index] : undefined
+        if (mark === undefined) return
+        const dom = window.getSelection()
+        if (dom !== null && !dom.isCollapsed) return
+        revealRuns(mark.runs.map(run => run.id))
+      }, [marks, revealRuns])
 
       const toggleRun = useCallback((id) => {
         setExpanded((current) => {
@@ -4813,7 +4885,8 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
                       'aria-label': t('manuscript'),
                       onMouseUp: readPreviewSelection,
                       onKeyUp: readPreviewSelection,
-                    }, renderPreview(snapshot.text, marks))
+                      onClick: onPreviewClick,
+                    }, renderPreview(snapshot.text, marks, index => t('markResults').replace('{count}', String(marks[index]?.runs.length ?? 0))))
                     : h('div', { className: 'rd-editor' },
                       h('div', { className: 'rd-highlights', ref: overlayRef, 'aria-hidden': true },
                         h('div', { className: 'rd-highlights-inner', ref: innerRef }, renderMarked(snapshot.text, marks))),
@@ -4830,6 +4903,11 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
                         onMouseUp: event => syncSelection(event.currentTarget),
                         onScroll: event => syncScroll(event.currentTarget.scrollTop),
                         onKeyDown,
+                        onClick: (event) => {
+                          const field = event.currentTarget
+                          if (field.selectionStart !== field.selectionEnd) return
+                          revealAtOffset(field.selectionStart ?? 0)
+                        },
                       }))))),
 
           // 审查 -----------------------------------------------------------------
@@ -4917,6 +4995,7 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
                   run,
                   t,
                   expanded: expanded.has(run.id),
+                  highlighted: highlight.ids.includes(run.id),
                   onToggle: toggleRun,
                   onStop: stopRun,
                   onRetry: retryRun,
