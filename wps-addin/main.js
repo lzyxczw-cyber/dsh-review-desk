@@ -54,7 +54,7 @@
     try { pane.DockPosition = 2 } catch (error) { /* 2 = dock right */ }
     var widen = function () {
       try {
-        if (Number(pane.Width) < MIN_PANE_WIDTH) pane.Width = PREFERRED_PANE_WIDTH
+        if (Number(pane.Width) < PREFERRED_PANE_WIDTH) pane.Width = PREFERRED_PANE_WIDTH
       } catch (error) { /* width is best-effort */ }
     }
     widen()

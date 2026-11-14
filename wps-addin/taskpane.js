@@ -10,7 +10,7 @@
   var DEFAULT_BRIDGE = 'http://127.0.0.1:47831'
   var BRIDGE_KEY = 'wps-review-desk.bridge'
   var SETTINGS_KEY = 'wps-review-desk.settings.v2'
-  var HISTORY_KEY = 'wps-review-desk.history.v4'
+  var HISTORY_KEY = 'wps-review-desk.history.v5'
   var HISTORY_LIMIT = 100
   var HISTORY_BYTES = 900000
   var VERIFY = /[?&]verify=1(?:&|$)/.test(window.location.search)
@@ -32,6 +32,14 @@
     { value: 16000, name: '16000 tokens（上限）' },
   ]
   var HIGHLIGHT_COLOR = 7 /* wdYellow */
+  var MARKS_KEY = 'wps-review-desk.marks.v2'
+  var MARK_COLORS = {
+    source: 0x2563eb,
+    logic: 0x7c3aed,
+    expand: 0x059669,
+    relate: 0xea580c,
+    custom: 0x6b7280,
+  }
   var PACKAGE_FORMAT = 'dsh.review-desk.package'
   var PACKAGE_VERSION = 1
   var PACKAGE_LIMIT = 8 * 1024 * 1024
@@ -47,7 +55,7 @@
 
   var state = {
     bridge: DEFAULT_BRIDGE,
-    settings: { provider: '', model: '', reasoningEffort: '', maxTokens: 0, token: '', autoSegment: true, segmentLength: SEGMENT_CHARS, sideWidth: SIDE_WIDTH_DEFAULT },
+    settings: { provider: '', model: '', reasoningEffort: '', maxTokens: 0, token: '', autoSegment: true, segmentLength: SEGMENT_CHARS, showMarks: true, sideWidth: SIDE_WIDTH_DEFAULT },
     catalog: null,
     docName: '',
     selection: null,
@@ -65,6 +73,8 @@
     toastTimer: 0,
     batch: null,
     pausedBatch: null,
+    marks: [],
+    marksDoc: '',
     pairing: null,
   }
 
@@ -130,6 +140,7 @@
           if (Number.isFinite(Number(parsed.maxTokens)) && Number(parsed.maxTokens) > 0) settings.maxTokens = Number(parsed.maxTokens)
           if (typeof parsed.token === 'string') settings.token = parsed.token
           if (parsed.autoSegment === false) settings.autoSegment = false
+          if (parsed.showMarks === false) settings.showMarks = false
           if (SEGMENT_CHARS_OPTIONS.indexOf(Number(parsed.segmentLength)) >= 0) settings.segmentLength = Number(parsed.segmentLength)
           if (Number.isFinite(Number(parsed.sideWidth))) {
             settings.sideWidth = Math.min(SIDE_WIDTH_MAX, Math.max(SIDE_WIDTH_MIN, Math.round(Number(parsed.sideWidth))))
@@ -488,6 +499,7 @@
     saveHistory()
     renderHistory()
     renderDetail(true)
+    scheduleMarks()
     toast('已清空历史')
   }
 
@@ -652,6 +664,7 @@
       updateHistoryRow(result)
       renderFilters()
       saveHistory()
+      scheduleMarks()
       report({
         kind: 'wps-result',
         action: result.action,
@@ -1210,6 +1223,125 @@
     }
   }
 
+  /* ------------------------------------------------------------------ *
+   * 原文划线标记（审阅过的范围）
+   * ------------------------------------------------------------------ */
+
+  function storedMarks() {
+    try {
+      var raw = localStorage.getItem(MARKS_KEY)
+      if (!raw) return []
+      var data = JSON.parse(raw)
+      if (data === null || typeof data !== 'object' || data.docName !== state.docName) return []
+      return Array.isArray(data.marks) ? data.marks : []
+    } catch (error) {
+      return []
+    }
+  }
+
+  function saveMarks() {
+    try {
+      localStorage.setItem(MARKS_KEY, JSON.stringify({ docName: state.docName, marks: state.marks }))
+    } catch (error) { /* ignore */ }
+  }
+
+  function readUnderline(range) {
+    var style = 0
+    var color = 0
+    try { style = Number(range.Font.Underline) || 0 } catch (error) { style = 0 }
+    try { color = Number(range.Font.UnderlineColor) || 0 } catch (error) { color = 0 }
+    return { style: style, color: color }
+  }
+
+  /** Word/WPS `Font.UnderlineColor` expects the VBA RGB() BGR ordering. */
+  function wdColor(rgb) {
+    var red = (rgb >> 16) & 0xff
+    var green = (rgb >> 8) & 0xff
+    var blue = rgb & 0xff
+    return (blue << 16) | (green << 8) | red
+  }
+
+  function setUnderline(range, style, color) {
+    try { range.Font.Underline = style } catch (error) { /* ignore */ }
+    try { range.Font.UnderlineColor = color } catch (error) { /* ignore */ }
+  }
+
+  /** Put back the formatting that was there before 审悦 added its underline. */
+  function restoreMarks(marks) {
+    var doc = getDoc()
+    if (!doc || !Array.isArray(marks)) return
+    marks.forEach(function (mark) {
+      try {
+        var range = doc.Range(mark.start, mark.end)
+        if (String(range.Text).slice(0, 60) !== mark.text) return
+        setUnderline(range, mark.previousUnderline, mark.previousColor)
+      } catch (error) { /* range shifted since it was marked */ }
+    })
+  }
+
+  /**
+   * Reflect reviewed ranges as coloured underlines in the document.
+   * Existing 审悦 marks (including the previous session's) are restored first,
+   * so this is safe to call after every result / replace / history change.
+   */
+  function applyReviewMarks() {
+    var doc = getDoc()
+    if (!doc) return { applied: 0, total: 0 }
+    restoreMarks(state.marks)
+    var persisted = storedMarks()
+    if (persisted.length > 0) restoreMarks(persisted)
+    state.marks = []
+    if (state.settings.showMarks === false) {
+      try { localStorage.removeItem(MARKS_KEY) } catch (error) { /* ignore */ }
+      return { applied: 0, total: 0 }
+    }
+    var seen = {}
+    var desired = []
+    state.results.forEach(function (result) {
+      if (result.status !== 'done' || result.batchSummary || !result.selection) return
+      var start = Number(result.selection.start)
+      var end = Number(result.selection.end)
+      if (!isFinite(start) || !isFinite(end) || end <= start) return
+      var key = `${start}:${end}`
+      if (seen[key]) return
+      seen[key] = true
+      desired.push({
+        start: start,
+        end: end,
+        action: result.action,
+        text: String(result.selection.text).slice(0, 60),
+      })
+    })
+    var applied = 0
+    desired.forEach(function (item) {
+      try {
+        var range = doc.Range(item.start, item.end)
+        var actual = String(range.Text)
+        if (actual.slice(0, 60) !== item.text) return
+        var previous = readUnderline(range)
+        var color = MARK_COLORS[item.action] !== undefined ? MARK_COLORS[item.action] : MARK_COLORS.custom
+        setUnderline(range, 1, wdColor(color))
+        state.marks.push({
+          start: item.start,
+          end: item.end,
+          text: actual.slice(0, 60),
+          action: item.action,
+          previousUnderline: previous.style,
+          previousColor: previous.color,
+          color: color,
+        })
+        applied += 1
+      } catch (error) { /* ignore one bad range */ }
+    })
+    saveMarks()
+    report({ kind: 'wps-marks', applied: applied, total: desired.length, showMarks: true })
+    return { applied: applied, total: desired.length }
+  }
+
+  function scheduleMarks() {
+    setTimeout(function () { try { applyReviewMarks() } catch (error) { /* ignore */ } }, 250)
+  }
+
   function insertComment(result) {
     if (result.status !== 'done') { toast('结果还没生成完'); return }
     var located = currentRange(result)
@@ -1272,6 +1404,7 @@
     updateHistoryRow(result)
     updateDetail(result)
     saveHistory()
+    scheduleMarks()
     toast('已以修订形式替换，可在 WPS 中接受/拒绝')
     report({ kind: 'wps-replace', ok: true, chars: replacement.length, resultId: result.id })
     readSelection()
@@ -1362,6 +1495,7 @@
       updateHistoryRow(result)
       updateDetail(result)
       saveHistory()
+      scheduleMarks()
       toast(mode === 'direct' ? '已写回原文（未走修订）' : '已撤销替换（拒绝相关修订）')
       report({ kind: 'wps-undo-replace', ok: true, mode: mode, rejected: rejected, debug: debug })
     } else {
@@ -1793,7 +1927,7 @@
       format: PACKAGE_FORMAT,
       version: PACKAGE_VERSION,
       exportedAt: new Date().toISOString(),
-      app: { plugin: 'review-desk', name: '审悦', build: 'wps-addin-1.0.0' },
+      app: { plugin: 'review-desk', name: '审悦', build: 'wps-addin-1.1.0' },
       document: { title: title, text: documentText },
       runs: state.results.filter(function (result) { return result.status !== 'running' }).map(function (result) {
         return {
@@ -2028,6 +2162,7 @@
     renderHistory()
     renderDetail(true)
     saveHistory()
+    scheduleMarks()
     toast(`已导入 ${imported} 条结果`)
     report({ kind: 'wps-import', ok: true, runs: imported, sameDocument: sameDocument })
     return imported
@@ -2271,6 +2406,23 @@
           error: result.error,
         })
         if (result.status !== 'done') return
+        var markInfo = applyReviewMarks()
+        try {
+          var probe = getDoc().Range(result.selection.start, result.selection.end)
+          markInfo.underline = Number(probe.Font.Underline) || 0
+          markInfo.color = Number(probe.Font.UnderlineColor) || 0
+        } catch (error) {
+          markInfo.error = String((error && error.message) || error)
+        }
+        report({
+          kind: 'wps-selftest',
+          stage: 'marks',
+          applied: markInfo.applied,
+          total: markInfo.total,
+          underline: markInfo.underline,
+          color: markInfo.color,
+          error: markInfo.error || '',
+        })
         setTimeout(function () { afterExpandWrite(result) }, 400)
       },
     })
@@ -2478,6 +2630,7 @@
       btnImportPackage: document.getElementById('btn-import-package'),
       packageFile: document.getElementById('package-file'),
       settingSegmentLength: document.getElementById('setting-segment-length'),
+      settingMarks: document.getElementById('setting-marks'),
       btnResetSide: document.getElementById('btn-reset-side'),
       btnContinueBatch: document.getElementById('btn-continue-batch'),
       btnDismissBatch: document.getElementById('btn-dismiss-batch'),
@@ -2496,6 +2649,7 @@
     renderCapOptions()
     renderSegmentLengthOptions()
     if (refs.settingSegment) refs.settingSegment.checked = state.settings.autoSegment !== false
+    if (refs.settingMarks) refs.settingMarks.checked = state.settings.showMarks !== false
 
     if (refs.settingModel) {
       refs.settingModel.addEventListener('change', function () {
@@ -2534,6 +2688,13 @@
       refs.settingSegmentLength.addEventListener('change', function () {
         state.settings.segmentLength = Number(refs.settingSegmentLength.value) || SEGMENT_CHARS
         persistSettings()
+      })
+    }
+    if (refs.settingMarks) {
+      refs.settingMarks.addEventListener('change', function () {
+        state.settings.showMarks = refs.settingMarks.checked === true
+        persistSettings()
+        setTimeout(function () { applyReviewMarks() }, 50)
       })
     }
 
@@ -2626,6 +2787,7 @@
     checkBridge()
     readSelection()
     renderSelection()
+    setTimeout(function () { try { applyReviewMarks() } catch (error) { /* ignore */ } }, 600)
     setInterval(function () {
       readSelection()
       renderSelection()
@@ -2634,7 +2796,7 @@
 
     report({
       kind: 'wps-taskpane',
-      version: '1.0',
+      version: '1.1',
       loaded: true,
       hasApp: !!getApp(),
       docName: state.docName,

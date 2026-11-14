@@ -1,6 +1,6 @@
 {
   "name": "@local/review-desk",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "ShenYue (审悦) for DeepSeek Harness: a three-column manuscript review workspace that runs source checks, logic review, expansion, connection analysis, and free-form rewrites on a selected passage, keeps every result, imports .docx/.pdf, and can install its WPS add-in on this machine.",

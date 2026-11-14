@@ -1,7 +1,7 @@
 {
   "name": "wps-review-desk",
   "addonType": "wps",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "ShenYue (审悦) task pane for WPS Writer: AI manuscript review with tracked-change write-back and comments.",
   "scripts": {}

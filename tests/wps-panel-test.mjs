@@ -15,7 +15,7 @@ const here = path.dirname(new URL(import.meta.url).pathname)
 const PANEL_DIR = path.join(here, '..', 'wps-addin')
 const HTML = fs.readFileSync(path.join(PANEL_DIR, 'taskpane.html'), 'utf8')
 const SCRIPT = fs.readFileSync(path.join(PANEL_DIR, 'taskpane.js'), 'utf8')
-const HISTORY_KEY = 'wps-review-desk.history.v4'
+const HISTORY_KEY = 'wps-review-desk.history.v5'
 const SETTINGS_KEY = 'wps-review-desk.settings.v2'
 
 const BASE_TEXT = '第一段：这是用于测试的原文。\n第二段：后续内容。'
@@ -33,6 +33,9 @@ function createFakeWps(initialText, docName) {
     comments: [],
     saved: true,
     highlight: 0,
+    underlineStyle: 0,
+    underlineColor: 0,
+    underlines: [],
     selection: { Start: 0, End: 0, Text: '' },
     scrollCalls: 0,
   }
@@ -80,6 +83,22 @@ function createFakeWps(initialText, docName) {
       Comments: {
         Add(_range, text) {
           model.comments.push({ start: bounds.start, end: bounds.end, text: String(text) })
+        },
+      },
+      Font: {
+        get Underline() { return model.underlineStyle },
+        set Underline(value) {
+          const style = Number(value) || 0
+          model.underlineStyle = style
+          if (style !== 0) {
+            model.underlines.push({ start: bounds.start, end: bounds.end, style, color: model.underlineColor })
+          }
+        },
+        get UnderlineColor() { return model.underlineColor },
+        set UnderlineColor(value) {
+          model.underlineColor = Number(value) || 0
+          const last = model.underlines.at(-1)
+          if (last) last.color = model.underlineColor
         },
       },
     }
@@ -732,6 +751,32 @@ await test('segment length setting is configurable', async () => {
   await flush(2)
   const stored = JSON.parse(page.window.localStorage.getItem(SETTINGS_KEY))
   assert.equal(stored.segmentLength, 600)
+  page.dom.window.close()
+})
+
+await test('marks reviewed ranges with action-coloured underlines', async () => {
+  const page = await mount()
+  await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
+  page.actionButton('expand').click()
+  await page.waitFor(() => page.detailState().textContent === '完成', 'expand done')
+  await page.waitFor(() => page.fake.model.underlines.length > 0, 'underline applied', 4000)
+  const mark = page.fake.model.underlines.at(-1)
+  assert.equal(mark.start, 0)
+  assert.equal(mark.end, 12)
+  assert.equal(mark.style, 1)
+  assert.equal(mark.color, 0x699605) // WPS/VBA RGB() stores colours as BGR
+  const stored = JSON.parse(page.window.localStorage.getItem('wps-review-desk.marks.v2'))
+  assert.equal(stored.docName, 'wps-panel-test.docx')
+  assert.equal(stored.marks.length, 1)
+  assert.equal(stored.marks[0].action, 'expand')
+  assert.equal(stored.marks[0].color, 0x059669)
+  // turning the setting off restores the original underline formatting
+  page.container.querySelector('#btn-settings-menu').click()
+  const checkbox = page.container.querySelector('#setting-marks')
+  checkbox.checked = false
+  checkbox.dispatchEvent(new page.window.Event('change'))
+  await page.waitFor(() => page.fake.model.underlineStyle === 0, 'underline restored', 3000)
+  assert.equal(page.window.localStorage.getItem('wps-review-desk.marks.v2'), null)
   page.dom.window.close()
 })
 
