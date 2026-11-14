@@ -72,12 +72,12 @@
       },
       "versions": [
         {
-          "version": "1.0.0",
-          "publishTimestamp": 1794621790,
+          "version": "1.1.0",
+          "publishTimestamp": 1794622753,
           "source": {
             "type": "git",
             "url": "https://github.com/lzyxczw-cyber/dsh-review-desk",
-            "commit": "aa693c9c207e3820d5724e9073034efc32ae5f3f"
+            "commit": "bb6f692cfede8391b7057dd1f5b49d48c197500f"
           }
         }
       ]
