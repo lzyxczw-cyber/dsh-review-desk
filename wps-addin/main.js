@@ -9,7 +9,7 @@
 
   var REPORT = 'http://127.0.0.1:38999/report'
   var MIN_PANE_WIDTH = 560
-  var PREFERRED_PANE_WIDTH = 1200
+  var PREFERRED_PANE_WIDTH = 560
   var state = { paneId: null, ribbonUI: null, autoOpened: false }
 
   function getApp() {
@@ -92,8 +92,6 @@
     try {
       var pane = app.CreateTaskPane(paneUrl())
       state.paneId = pane.ID
-      try { pane.MinWidth = MIN_PANE_WIDTH } catch (error) { /* ignore */ }
-      try { pane.Width = PREFERRED_PANE_WIDTH } catch (error) { /* ignore */ }
       pane.Visible = true
       applyPaneLayout(pane)
       reportPane(pane)
