@@ -32,16 +32,18 @@ WPS 文字（真 .docx）
 
 `index.js` 的 `startWpsBridge(ctx)` 在插件 `install()` 时启动：
 
-- `GET /health` → `{"ok":true,"service":"review-desk-wps-bridge","bridge":"1","auth":"open|token"}`
+- `GET /health` → `{"ok":true,"service":"review-desk-wps-bridge","bridge":"1","auth":"token","pairing":true,"exportDir":"…"}`
+- `GET /pair` → 自动生成的访问令牌（需 `x-review-desk-pair: 1` 且回环来源；面板启动时自动配对）
 - `GET /models` → 默认模型/推理等级、可选模型（含推理等级）、各动作输出上限
+- `POST /export` → `{filename, content}`，写入导出目录并返回 `{ok,path,filename,bytes}`（拒绝路径穿越、同名自动加序号）
 - `POST /analyze`（JSON，字段同 DSH 面板请求）→ `application/x-ndjson` 流，帧类型：
   `meta` / `stage` / `sources` / `delta` / `warning` / `done` / `error`
 - 请求可选字段：`provider` / `model` / `reasoningEffort` / `maxTokens`（1000–16000，0 或省略用动作默认）
 - 默认输出上限：来源/逻辑/关联/要求 6000 tokens，扩写 8000 tokens
 - **来源限制**：只接受回环来源（`http://127.0.0.1[:port]`、`http://localhost[:port]`、打包后的 `null` 来源）或非浏览器客户端；其他 Origin 一律 403
-- **可选令牌**：设置 `REVIEW_DESK_WPS_TOKEN` 后，`/models`、`/analyze` 需带 `x-review-desk-token` 头（`/health` 保持开放用于连通性检测）
-- Body 上限 4 MB，单次审核超时 180 s
-- 环境变量：`REVIEW_DESK_WPS_BRIDGE=0` 关闭；`REVIEW_DESK_WPS_BRIDGE_PORT` 改端口；`REVIEW_DESK_WPS_TOKEN` 启用令牌
+- **令牌默认开启**：桥启动时自动生成令牌，面板通过 `/pair` 自动获取；`/models`、`/analyze`、`/export` 需带 `x-review-desk-token` 头（`/health` 保持开放用于连通性检测）
+- Body 上限 4 MB（导出 8 MB），单次审核超时 180 s
+- 环境变量：`REVIEW_DESK_WPS_BRIDGE=0` 关闭；`REVIEW_DESK_WPS_BRIDGE_PORT` 改端口；`REVIEW_DESK_WPS_TOKEN` 指定固定令牌；`REVIEW_DESK_WPS_BRIDGE_AUTH=open` 关闭校验；`REVIEW_DESK_WPS_EXPORT_DIR` 改导出目录（默认 `~/Documents/ReviewDeskExports`）
 
 请求示例：
 
@@ -70,10 +72,14 @@ curl -N http://127.0.0.1:47831/analyze \
 | **v0.3 两栏 + 右侧停靠**：任务窗格 `DockPosition=2`、宽 720px；左栏 300px / 右栏 420px（flex row），窄窗自动堆叠 | ✅ |
 | **v0.3 端到端**：扩写 720 字 → 定位并高亮 → 批注 708 字 → 修订替换 231 字 → 撤销替换（拒绝 2 个修订，正文还原）→ 追加要求 326 字 | ✅ |
 | **v0.3 安全**：外部 Origin 返回 403、回环 Origin 反射、`REVIEW_DESK_WPS_TOKEN` 令牌校验（bridge 测试） | ✅ |
+| **v0.4 令牌默认开启**：桥自动生成令牌、面板 `/pair` 自动配对；无令牌 401、`/pair` 需配对头与回环来源 | ✅ |
+| **v0.4 审核包 / 报告导出**：导出 `dsh.review-desk.package`（format/version/文档/runs 校验通过）与 Markdown 报告，经本机桥写入导出目录 | ✅ |
+| **v0.4 整篇批量审阅**：整篇按段落切分（本次 2 段），逐段完成并生成汇总结果；面板进度条与取消（jsdom 验证） | ✅ |
+| **v0.4 左栏宽度**：拖拽调宽并持久化（jsdom 验证；真机侧栏 360px 生效） | ✅ |
 
-验证产物：`wps-review-demo/evidence/v0.2/`、`v0.3/`（报告、导出的 docx、两栏面板截图 `panel-two-column-right.png`）。
+验证产物：`wps-review-demo/evidence/v0.2/`、`v0.3/`、`v0.4/`（报告、导出的审核包/报告、导出的 docx、面板截图）。
 
-## 面板工作流（v0.3）
+## 面板工作流（v0.4）
 
 - **两栏任务窗格**：默认停靠右侧（`DockPosition=2`），最小宽度 560px；左栏为设置 / 选区 / 执行 / 历史列表，右栏为选中结果详情；窗格窄于 640px 时自动堆叠；
 - 结果历史保存在本机 localStorage（最多 100 条），支持按动作筛选、关键词搜索、清空；
@@ -81,6 +87,10 @@ curl -N http://127.0.0.1:47831/analyze \
 - 替换原文以 `TrackRevisions` 写入；「撤销替换」会拒绝覆盖该范围的修订并还原原文（失败时提示用 WPS 撤销）；
 - 「定位回原文」选中并滚动到文档中的原文位置，并短暂高亮；
 - 设置里可选择 DSH 里的模型通道、推理等级和输出上限；触顶时提供「提高输出上限重试」；
+- **审核包 / 报告导出**：导出与 DSH 面板兼容的 `dsh.review-desk.package` JSON，或 Markdown 审稿报告（经本机桥写入导出目录）；
+- **长文分段审阅**：选中 >1200 字时自动切段逐段审核并汇总（可在设置关闭）；
+- **整篇批量审阅**：整篇按段落切分顺序审核，进度条 + 可取消，结束后生成本地汇总；
+- **左栏宽度可拖拽**（双击复位、自动记忆）；
 - 快捷键：⌘/Ctrl+Enter 执行、⌘/Ctrl+K 搜索、Esc 退出输入。
 
 ## 已知风险

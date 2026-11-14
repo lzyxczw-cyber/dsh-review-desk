@@ -17,7 +17,10 @@
  */
 
 import http from 'node:http'
-import { timingSafeEqual } from 'node:crypto'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { mkdir, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 
 
 /** Authenticated route this half owns on the shared `/api` channel. */
@@ -36,14 +39,58 @@ const PAGE_RENDER = {
   timeoutMs: 90_000,
 }
 
+/** `REVIEW_DESK_WPS_BRIDGE_AUTH=open` restores the old no-token behaviour. */
+const WPS_BRIDGE_AUTH_OPEN = (process.env.REVIEW_DESK_WPS_BRIDGE_AUTH ?? '').trim().toLowerCase() === 'open'
+const WPS_BRIDGE_TOKEN_ENV = (process.env.REVIEW_DESK_WPS_TOKEN ?? '').trim()
+
 /** Loopback bridge that lets the WPS add-in (`wps-addin/`) reuse this host. */
 const WPS_BRIDGE = {
   port: Number.parseInt(process.env.REVIEW_DESK_WPS_BRIDGE_PORT ?? '', 10) || 47_831,
   maxBodyBytes: 4 * 1024 * 1024,
+  exportMaxBytes: 8 * 1024 * 1024,
   timeoutMs: 180_000,
   enabled: process.env.REVIEW_DESK_WPS_BRIDGE !== '0',
-  /** Optional shared token; when set, `/models` and `/analyze` require it. */
-  token: (process.env.REVIEW_DESK_WPS_TOKEN ?? '').trim(),
+  authOpen: WPS_BRIDGE_AUTH_OPEN,
+  /** Auto-generated unless disabled; the panel pairs automatically via `/pair`. */
+  token: WPS_BRIDGE_AUTH_OPEN ? '' : (WPS_BRIDGE_TOKEN_ENV || randomBytes(18).toString('hex')),
+  /** Where exported review packages / reports are written. */
+  exportDir: (process.env.REVIEW_DESK_WPS_EXPORT_DIR ?? '').trim()
+    || path.join(os.homedir(), 'Documents', 'ReviewDeskExports'),
+  pairHeader: 'x-review-desk-pair',
+}
+
+/** Turn a caller-supplied name into a safe export filename. */
+function exportFilename(value) {
+  const fallback = `review-desk-export-${Date.now()}`
+  const raw = typeof value === 'string' && value.trim() !== '' ? value.trim() : fallback
+  const name = raw
+    .replace(/[\\/:*?"<>|\u0000-\u001f]+/gu, '-')
+    .replace(/^\.+/u, '')
+    .trim()
+    .slice(0, 120)
+  if (name === '') return `${fallback}.json`
+  return /\.(?:json|md|markdown|txt)$/iu.test(name) ? name : `${name}.json`
+}
+
+/** Write one export file into the export directory without clobbering existing files. */
+async function writeBridgeExport(filename, content) {
+  const directory = WPS_BRIDGE.exportDir
+  await mkdir(directory, { recursive: true })
+  const base = exportFilename(filename)
+  const dot = base.lastIndexOf('.')
+  const stem = dot > 0 ? base.slice(0, dot) : base
+  const extension = dot > 0 ? base.slice(dot) : '.json'
+  let target = path.join(directory, base)
+  for (let attempt = 1; attempt < 50; attempt += 1) {
+    try {
+      await writeFile(target, content, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+      return target
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error
+      target = path.join(directory, `${stem}-${attempt}${extension}`)
+    }
+  }
+  throw new Error('导出目录里同名文件过多，请换一个文件名。')
 }
 
 /**
@@ -728,6 +775,18 @@ async function handlePagesRequest(ctx, request) {
   }
 }
 
+/** Read one bridge request body with a hard byte budget. */
+async function readBridgeBody(request, limit) {
+  const chunks = []
+  let size = 0
+  for await (const chunk of request) {
+    size += chunk.length
+    if (size > limit) throw new Error('请求体过大。')
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
 /** Model catalog for the WPS panel's model / reasoning-level / output-cap pickers. */
 async function readModelCatalog(ctx) {
   const selection = ctx.agentDefaultModel.currentSelection()
@@ -799,7 +858,7 @@ function startWpsBridge(ctx) {
     const headers = {
       'access-control-allow-origin': origin || '*',
       'access-control-allow-methods': 'GET,POST,OPTIONS',
-      'access-control-allow-headers': 'content-type,x-review-desk-token',
+      'access-control-allow-headers': 'content-type,x-review-desk-token,x-review-desk-pair',
       'cache-control': 'no-store',
       vary: 'origin',
     }
@@ -816,7 +875,24 @@ function startWpsBridge(ctx) {
         service: 'review-desk-wps-bridge',
         bridge: '1',
         auth: WPS_BRIDGE.token === '' ? 'open' : 'token',
+        pairing: !WPS_BRIDGE.authOpen && WPS_BRIDGE_TOKEN_ENV === '',
+        exportDir: WPS_BRIDGE.exportDir,
       }))
+      return
+    }
+    if (request.method === 'GET' && url.pathname === '/pair') {
+      if (WPS_BRIDGE.authOpen || WPS_BRIDGE.token === '') {
+        response.writeHead(400, { ...headers, 'content-type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({ error: 'bridge auth is open' }))
+        return
+      }
+      if ((request.headers[WPS_BRIDGE.pairHeader] ?? '') !== '1') {
+        response.writeHead(400, { ...headers, 'content-type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({ error: `pairing requires ${WPS_BRIDGE.pairHeader}: 1` }))
+        return
+      }
+      response.writeHead(200, { ...headers, 'content-type': 'application/json; charset=utf-8' })
+      response.end(JSON.stringify({ ok: true, token: WPS_BRIDGE.token }))
       return
     }
     if (!bridgeTokenMatches(request)) {
@@ -835,6 +911,20 @@ function startWpsBridge(ctx) {
       }
       return
     }
+    if (request.method === 'POST' && url.pathname === '/export') {
+      try {
+        const raw = JSON.parse(await readBridgeBody(request, WPS_BRIDGE.exportMaxBytes))
+        const content = raw !== null && typeof raw === 'object' && typeof raw.content === 'string' ? raw.content : ''
+        if (content === '') throw new Error('导出内容为空。')
+        const target = await writeBridgeExport(raw.filename, content)
+        response.writeHead(200, { ...headers, 'content-type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({ ok: true, path: target, filename: path.basename(target), bytes: Buffer.byteLength(content) }))
+      } catch (error) {
+        response.writeHead(400, { ...headers, 'content-type': 'application/json; charset=utf-8' })
+        response.end(JSON.stringify({ error: messageOf(error) }))
+      }
+      return
+    }
     if (request.method !== 'POST' || url.pathname !== '/analyze') {
       response.writeHead(404, { ...headers, 'content-type': 'application/json; charset=utf-8' })
       response.end(JSON.stringify({ error: 'not found' }))
@@ -842,14 +932,7 @@ function startWpsBridge(ctx) {
     }
     let raw
     try {
-      const chunks = []
-      let size = 0
-      for await (const chunk of request) {
-        size += chunk.length
-        if (size > WPS_BRIDGE.maxBodyBytes) throw new Error('请求体过大。')
-        chunks.push(chunk)
-      }
-      raw = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      raw = JSON.parse(await readBridgeBody(request, WPS_BRIDGE.maxBodyBytes))
     } catch (error) {
       response.writeHead(400, { ...headers, 'content-type': 'application/json; charset=utf-8' })
       response.end(JSON.stringify({ error: messageOf(error) }))
@@ -898,6 +981,10 @@ function startWpsBridge(ctx) {
   })
   server.listen(WPS_BRIDGE.port, '127.0.0.1', () => {
     console.info(`[review-desk] WPS bridge on http://127.0.0.1:${WPS_BRIDGE.port}`)
+    if (!WPS_BRIDGE.authOpen && WPS_BRIDGE_TOKEN_ENV === '') {
+      console.info(`[review-desk] WPS bridge auth token (auto-generated): ${WPS_BRIDGE.token}`)
+    }
+    console.info(`[review-desk] WPS export directory: ${WPS_BRIDGE.exportDir}`)
   })
   return server
 }

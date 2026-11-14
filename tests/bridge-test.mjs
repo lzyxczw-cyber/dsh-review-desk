@@ -1,19 +1,24 @@
 /**
  * WPS bridge test: starts the loopback bridge with a fake Cordis context and
- * drives GET /health, the CORS preflight and POST /analyze (NDJSON frames).
+ * drives /health, /pair (auto token), /models, /export and POST /analyze.
  */
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import path from 'node:path'
 
+const EXPORT_DIR = `/tmp/review-desk-wps-test-${process.pid}`
 process.env.REVIEW_DESK_WPS_BRIDGE = '1'
 process.env.REVIEW_DESK_WPS_BRIDGE_PORT = '47839'
-process.env.REVIEW_DESK_WPS_TOKEN = 'test-token'
+process.env.REVIEW_DESK_WPS_EXPORT_DIR = EXPORT_DIR
+delete process.env.REVIEW_DESK_WPS_TOKEN
+delete process.env.REVIEW_DESK_WPS_BRIDGE_AUTH
 
 const here = path.dirname(new URL(import.meta.url).pathname)
 const mod = await import(path.join(here, '..', 'index.js'))
 
 const BASE = 'http://127.0.0.1:47839'
-const AUTH = { 'x-review-desk-token': 'test-token' }
+const LOOPBACK = { origin: 'http://127.0.0.1:3889' }
+const llmCalls = []
 
 const ctx = {
   effect(fn) {
@@ -59,8 +64,6 @@ const ctx = {
   tools: { register() { return () => {} } },
 }
 
-const llmCalls = []
-
 mod.apply(ctx)
 
 /** Wait for the bridge listener; the plugin starts it asynchronously. */
@@ -81,31 +84,43 @@ async function health() {
 const info = await health()
 assert.equal(info.ok, true)
 assert.equal(info.service, 'review-desk-wps-bridge')
-assert.equal(info.auth, 'token')
-console.log('ok  health')
+assert.equal(info.auth, 'token', 'token auth is on by default')
+assert.equal(info.pairing, true, 'auto pairing is available')
+assert.equal(info.exportDir, EXPORT_DIR)
+console.log('ok  health (auto token)')
 
 // A foreign browser origin cannot drive the bridge, even on loopback.
 const forbidden = await fetch(`${BASE}/health`, { headers: { origin: 'http://evil.example' } })
 assert.equal(forbidden.status, 403)
 console.log('ok  origin rejected')
 
-const allowedOrigin = await fetch(`${BASE}/health`, { headers: { origin: 'http://127.0.0.1:3889' } })
+const allowedOrigin = await fetch(`${BASE}/health`, { headers: LOOPBACK })
 assert.equal(allowedOrigin.status, 200)
 assert.equal(allowedOrigin.headers.get('access-control-allow-origin'), 'http://127.0.0.1:3889')
 console.log('ok  loopback origin reflected')
 
 const preflight = await fetch(`${BASE}/analyze`, {
   method: 'OPTIONS',
-  headers: { origin: 'http://127.0.0.1:3889', 'access-control-request-headers': 'content-type,x-review-desk-token' },
+  headers: { ...LOOPBACK, 'access-control-request-headers': 'content-type,x-review-desk-token' },
 })
 assert.equal(preflight.status, 204)
 assert.match(preflight.headers.get('access-control-allow-headers') ?? '', /x-review-desk-token/u)
 console.log('ok  cors preflight')
 
+// Pairing requires the explicit pairing header and a loopback origin.
+const pairWithoutHeader = await fetch(`${BASE}/pair`, { headers: LOOPBACK })
+assert.equal(pairWithoutHeader.status, 400)
+const pairForbidden = await fetch(`${BASE}/pair`, { headers: { origin: 'http://evil.example', 'x-review-desk-pair': '1' } })
+assert.equal(pairForbidden.status, 403)
+const paired = await fetch(`${BASE}/pair`, { headers: { ...LOOPBACK, 'x-review-desk-pair': '1' } })
+assert.equal(paired.status, 200)
+const token = (await paired.json()).token
+assert.match(token, /^[a-f0-9]{36}$/u)
+console.log('ok  pair returns an auto token')
+
+const AUTH = { 'x-review-desk-token': token }
 const withoutToken = await fetch(`${BASE}/models`)
 assert.equal(withoutToken.status, 401)
-console.log('ok  token required')
-
 const catalogResponse = await fetch(`${BASE}/models`, { headers: AUTH })
 assert.equal(catalogResponse.status, 200)
 const catalog = await catalogResponse.json()
@@ -145,6 +160,34 @@ assert.equal(capped.status, 200)
 assert.equal(llmCalls.at(-1).maxTokens, 16_000, 'output cap is clamped')
 console.log('ok  output cap override')
 
+// Export writes a real file into the configured directory.
+const exportResponse = await fetch(`${BASE}/export`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', ...AUTH },
+  body: JSON.stringify({ filename: '审核报告.md', content: '# 测试报告\n\n内容正文。' }),
+})
+assert.equal(exportResponse.status, 200)
+const exported = await exportResponse.json()
+assert.equal(exported.ok, true)
+assert.ok(exported.path.startsWith(EXPORT_DIR), 'export stays inside the export dir')
+assert.match(exported.path, /审核报告\.md$/u)
+assert.equal(fs.readFileSync(exported.path, 'utf8'), '# 测试报告\n\n内容正文。')
+// A second export with the same name must not overwrite the first one.
+const again = await (await fetch(`${BASE}/export`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', ...AUTH },
+  body: JSON.stringify({ filename: '审核报告.md', content: 'v2' }),
+})).json()
+assert.notEqual(again.path, exported.path)
+const unsafeName = await (await fetch(`${BASE}/export`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', ...AUTH },
+  body: JSON.stringify({ filename: '../evil/名称<script>.json', content: '{}' }),
+})).json()
+assert.ok(unsafeName.path.startsWith(EXPORT_DIR), 'path traversal is neutralised')
+assert.equal(path.basename(unsafeName.path).includes('..'), false)
+console.log('ok  export file')
+
 const invalid = await fetch(`${BASE}/analyze`, {
   method: 'POST',
   headers: { 'content-type': 'application/json', ...AUTH },
@@ -158,5 +201,6 @@ console.log('ok  invalid payload')
 assert.equal((await fetch(`${BASE}/nope`, { headers: AUTH })).status, 404)
 console.log('ok  unknown route')
 
+fs.rmSync(EXPORT_DIR, { recursive: true, force: true })
 console.log('\nall bridge checks passed')
 process.exit(0)

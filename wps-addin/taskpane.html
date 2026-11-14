@@ -29,6 +29,10 @@
         <label>输出上限
           <select id="setting-cap"><option value="0">（默认）</option></select>
         </label>
+        <label class="rd-check">
+          <input id="setting-segment" type="checkbox" checked />
+          <span>长文自动分段（选中 &gt; 1200 字时分段审阅）</span>
+        </label>
         <p id="settings-hint" class="rd-hint">默认使用 DSH 的模型与推理设置；上限越高越慢、费用越高。</p>
       </details>
 
@@ -52,6 +56,15 @@
           <input id="instruction" type="text" maxlength="500" placeholder="自由要求，例如：压缩到 60 字" />
           <button id="btn-custom" type="button" class="rd-primary">执行</button>
         </div>
+        <div class="rd-batch-run">
+          <select id="batch-action" title="整篇审阅使用哪个动作">
+            <option value="logic">逻辑分析</option>
+            <option value="source">来源查证</option>
+            <option value="expand">扩写</option>
+            <option value="relate">关联分析</option>
+          </select>
+          <button id="btn-batch" type="button">整篇审阅</button>
+        </div>
         <p class="rd-shortcut-hint">⌘/Ctrl+Enter 执行 · ⌘/Ctrl+K 搜索</p>
       </section>
 
@@ -64,6 +77,15 @@
       <div id="history-list" class="rd-history-list"></div>
 
       <footer class="rd-side-foot">
+        <details class="rd-export">
+          <summary>导出 / 审核包</summary>
+          <div class="rd-export-actions">
+            <button id="btn-export-package" type="button">导出审核包 (.json)</button>
+            <button id="btn-export-report" type="button">导出审稿报告 (.md)</button>
+            <button id="btn-copy-package" type="button">复制审核包</button>
+          </div>
+          <p id="export-hint" class="rd-hint">导出文件由本机桥写入 DSH 指定的目录。</p>
+        </details>
         <details>
           <summary>连接设置</summary>
           <label>桥地址
@@ -79,8 +101,14 @@
         </details>
       </footer>
     </aside>
+    <div id="side-resizer" class="rd-resizer" role="separator" aria-orientation="vertical" title="拖动调整左栏宽度（双击复位）"></div>
 
     <main class="rd-main">
+      <div id="batch-bar" class="rd-batch" hidden>
+        <div class="rd-batch-text"></div>
+        <div class="rd-batch-progress"><div class="rd-batch-fill"></div></div>
+        <button id="btn-cancel-batch" type="button">取消</button>
+      </div>
       <div id="detail-empty" class="rd-empty">
         <p>从左侧选择一条结果，或选中文字开始一次审核。</p>
         <p class="rd-hint">结果会保存在本机；替换以 WPS「修订」写入，可接受 / 拒绝，或 ⌘Z 撤销。</p>

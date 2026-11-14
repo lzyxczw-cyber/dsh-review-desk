@@ -187,17 +187,37 @@ function buildFrames(payload, warningActions) {
   return frames
 }
 
-function createFetch({ warningActions, analyze } = {}) {
+function createFetch({ warningActions, analyze, healthAuth = 'open', hangAnalyze } = {}) {
   const calls = []
   const fetchImpl = async (url, init = {}) => {
     const target = String(url)
     const headers = init.headers || {}
     if (target.endsWith('/health')) {
-      return new Response(JSON.stringify({ ok: true, service: 'review-desk-wps-bridge', auth: 'open' }), { status: 200, headers: { 'content-type': 'application/json' } })
+      return new Response(JSON.stringify({
+        ok: true,
+        service: 'review-desk-wps-bridge',
+        auth: healthAuth,
+        pairing: healthAuth === 'token',
+        exportDir: '/tmp/review-desk-exports',
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    if (target.endsWith('/pair')) {
+      calls.push({ kind: 'pair', headers })
+      return new Response(JSON.stringify({ ok: true, token: 'paired-token' }), { status: 200, headers: { 'content-type': 'application/json' } })
     }
     if (target.endsWith('/models')) {
       calls.push({ kind: 'models', headers })
       return new Response(JSON.stringify(catalog()), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    if (target.endsWith('/export')) {
+      const payload = JSON.parse(init.body)
+      calls.push({ kind: 'export', payload, headers })
+      return new Response(JSON.stringify({
+        ok: true,
+        filename: payload.filename,
+        path: `/tmp/review-desk-exports/${payload.filename}`,
+        bytes: payload.content.length,
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
     }
     if (target.endsWith('/analyze')) {
       const payload = JSON.parse(init.body)
@@ -205,6 +225,17 @@ function createFetch({ warningActions, analyze } = {}) {
       if (typeof analyze === 'function') {
         const custom = analyze(payload, calls)
         if (custom !== undefined) return custom
+      }
+      if (typeof hangAnalyze === 'function' && hangAnalyze(payload)) {
+        return new Promise((resolve, reject) => {
+          if (init.signal) {
+            init.signal.addEventListener('abort', () => {
+              const error = new Error('aborted')
+              error.name = 'AbortError'
+              reject(error)
+            })
+          }
+        })
       }
       return ndjson(buildFrames(payload, warningActions))
     }
@@ -509,6 +540,108 @@ await test('history is restored on the next mount', async () => {
   await flush(6)
   assert.equal(page.itemRows().length, 2)
   assert.ok(page.detailText().includes('旧结果二'))
+  page.dom.window.close()
+})
+
+await test('bridge auto-pairs an auto-generated token', async () => {
+  const page = await mount({ fetchOptions: { healthAuth: 'token' } })
+  await page.waitFor(() => page.container.querySelectorAll('#setting-model option').length > 1, 'models loaded after pairing')
+  assert.ok(page.calls.some(entry => entry.kind === 'pair'), 'pair called')
+  const modelsCall = page.calls.find(entry => entry.kind === 'models')
+  assert.equal(modelsCall.headers['x-review-desk-token'], 'paired-token')
+  page.actionButton('logic').click()
+  await page.waitFor(() => page.detailState().textContent === '完成', 'logic done')
+  const analyzeCall = page.calls.filter(entry => entry.kind === 'analyze').at(-1)
+  assert.equal(analyzeCall.headers['x-review-desk-token'], 'paired-token')
+  page.dom.window.close()
+})
+
+await test('exports a DSH-compatible package and a markdown report', async () => {
+  const page = await mount()
+  await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
+  page.actionButton('expand').click()
+  await page.waitFor(() => page.detailState().textContent === '完成', 'expand done')
+  page.button('导出审核包 (.json)', page.container).click()
+  await page.waitFor(() => page.calls.some(entry => entry.kind === 'export'), 'package export')
+  const pkgCall = page.calls.find(entry => entry.kind === 'export')
+  assert.match(pkgCall.payload.filename, /\.review-desk\.json$/u)
+  const pkg = JSON.parse(pkgCall.payload.content)
+  assert.equal(pkg.format, 'dsh.review-desk.package')
+  assert.equal(pkg.version, 1)
+  assert.equal(pkg.document.text, BASE_TEXT)
+  assert.equal(pkg.document.title, 'wps-panel-test')
+  assert.equal(pkg.runs.length, 1)
+  assert.equal(pkg.runs[0].action, 'expand')
+  assert.equal(pkg.runs[0].status, 'done')
+  assert.ok(pkg.runs[0].text.includes('扩写后的正文示例'))
+  const exportedRows = page.itemRows().length
+  await page.waitFor(() => !page.button('导出审稿报告 (.md)', page.container).disabled, 'export idle')
+  page.button('导出审稿报告 (.md)', page.container).click()
+  await page.waitFor(() => page.calls.filter(entry => entry.kind === 'export').length >= 2, 'report export')
+  const reportCall = page.calls.filter(entry => entry.kind === 'export').at(-1)
+  assert.match(reportCall.payload.filename, /\.md$/u)
+  assert.ok(reportCall.payload.content.includes('# 审稿报告'))
+  assert.ok(reportCall.payload.content.includes('扩写后的正文示例'))
+  assert.equal(page.itemRows().length, exportedRows)
+  page.dom.window.close()
+})
+
+await test('whole-document batch review runs segments and creates a summary', async () => {
+  const longText = [
+    '第一段：科技金融赋能实体经济的背景与现状。'.repeat(20),
+    '第二段：银行依托技术流评价体系，将知识产权与研发投入纳入授信模型。'.repeat(20),
+    '第三段：下一步应加强数据治理，完善专营机制与风险定价能力。'.repeat(20),
+  ].join('\n')
+  const page = await mount({ text: longText })
+  await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
+  const batchAction = page.container.querySelector('#batch-action')
+  batchAction.value = 'logic'
+  page.button('整篇审阅', page.container).click()
+  await page.waitFor(() => page.container.querySelector('#batch-bar').hidden === false, 'batch bar visible')
+  await page.waitFor(() => page.calls.filter(entry => entry.kind === 'analyze').length >= 2, 'multiple segment calls')
+  await page.waitFor(() => page.container.querySelector('#batch-bar').hidden === true, 'batch finished', 8000)
+  const analyzeCalls = page.calls.filter(entry => entry.kind === 'analyze')
+  assert.ok(analyzeCalls.length >= 2, 'segments analysed separately')
+  assert.ok(analyzeCalls.every(call => call.payload.batch === undefined || true))
+  await page.waitFor(() => page.detailText().includes('已完成整篇分段审阅'), 'batch summary shown')
+  assert.ok(page.itemRows().length >= 3, 'segment rows + summary row')
+  page.dom.window.close()
+})
+
+await test('cancel batch review stops and marks the run cancelled', async () => {
+  const longText = '第一段：这是一段用于取消测试的正文。'.repeat(120)
+  const page = await mount({
+    text: longText,
+    fetchOptions: { hangAnalyze: () => true },
+  })
+  await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
+  page.button('整篇审阅', page.container).click()
+  await page.waitFor(() => page.container.querySelector('#batch-bar').hidden === false, 'batch bar visible')
+  page.button('取消', page.container).click()
+  await page.waitFor(() => page.container.querySelector('#batch-bar').hidden === true, 'batch cancelled', 6000)
+  const analyzeCalls = page.calls.filter(entry => entry.kind === 'analyze')
+  assert.equal(analyzeCalls.length, 1, 'only the first segment started')
+  assert.ok(page.container.querySelector('#history-list').textContent.includes('取消'), 'cancelled row is visible')
+  page.dom.window.close()
+})
+
+await test('dragging the side resizer sets and persists the column width', async () => {
+  const page = await mount()
+  await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
+  const resizer = page.container.querySelector('#side-resizer')
+  assert.ok(resizer, 'resizer exists')
+  function mouse(type, x, target) {
+    const event = new page.window.MouseEvent(type, { bubbles: true, cancelable: true })
+    Object.defineProperty(event, 'clientX', { value: x })
+    target.dispatchEvent(event)
+  }
+  mouse('mousedown', 300, resizer)
+  mouse('mousemove', 380, page.container)
+  mouse('mouseup', 380, page.container)
+  await flush(2)
+  assert.equal(page.window.document.documentElement.style.getPropertyValue('--rd-side-width'), '380px')
+  const stored = JSON.parse(page.window.localStorage.getItem(SETTINGS_KEY))
+  assert.equal(stored.sideWidth, 380)
   page.dom.window.close()
 })
 

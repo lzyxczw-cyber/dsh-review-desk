@@ -32,10 +32,21 @@
     { value: 16000, name: '16000 tokens（上限）' },
   ]
   var HIGHLIGHT_COLOR = 7 /* wdYellow */
+  var PACKAGE_FORMAT = 'dsh.review-desk.package'
+  var PACKAGE_VERSION = 1
+  var PACKAGE_LIMIT = 8 * 1024 * 1024
+  var SEGMENT_CHARS = 900
+  var SEGMENT_AUTO_THRESHOLD = 1200
+  var SEGMENT_SELECTION_LIMIT = 12
+  var SEGMENT_DOCUMENT_LIMIT = 40
+  var DOCUMENT_LIMIT_CHARS = 60000
+  var SIDE_WIDTH_DEFAULT = 300
+  var SIDE_WIDTH_MIN = 240
+  var SIDE_WIDTH_MAX = 520
 
   var state = {
     bridge: DEFAULT_BRIDGE,
-    settings: { provider: '', model: '', reasoningEffort: '', maxTokens: 0, token: '' },
+    settings: { provider: '', model: '', reasoningEffort: '', maxTokens: 0, token: '', autoSegment: true, sideWidth: SIDE_WIDTH_DEFAULT },
     catalog: null,
     docName: '',
     selection: null,
@@ -51,6 +62,8 @@
     rowMap: new Map(),
     historyTimer: 0,
     toastTimer: 0,
+    batch: null,
+    pairing: null,
   }
 
   var refs = {}
@@ -103,7 +116,7 @@
    * ------------------------------------------------------------------ */
 
   function readSettings() {
-    var settings = { provider: '', model: '', reasoningEffort: '', maxTokens: 0, token: '' }
+    var settings = { provider: '', model: '', reasoningEffort: '', maxTokens: 0, token: '', autoSegment: true, sideWidth: SIDE_WIDTH_DEFAULT }
     try {
       var raw = localStorage.getItem(SETTINGS_KEY)
       if (raw) {
@@ -114,6 +127,10 @@
           if (typeof parsed.reasoningEffort === 'string') settings.reasoningEffort = parsed.reasoningEffort
           if (Number.isFinite(Number(parsed.maxTokens)) && Number(parsed.maxTokens) > 0) settings.maxTokens = Number(parsed.maxTokens)
           if (typeof parsed.token === 'string') settings.token = parsed.token
+          if (parsed.autoSegment === false) settings.autoSegment = false
+          if (Number.isFinite(Number(parsed.sideWidth))) {
+            settings.sideWidth = Math.min(SIDE_WIDTH_MAX, Math.max(SIDE_WIDTH_MIN, Math.round(Number(parsed.sideWidth))))
+          }
         }
       }
     } catch (error) { /* ignore */ }
@@ -239,6 +256,29 @@
     return url.replace(/\/+$/u, '')
   }
 
+  /** Pair with the bridge once and keep the auto-generated token. */
+  function pairBridge() {
+    var controller = new AbortController()
+    var timer = setTimeout(function () { controller.abort() }, 5000)
+    return fetch(`${state.bridge}/pair`, {
+      headers: { 'x-review-desk-pair': '1' },
+      signal: controller.signal,
+    }).then(function (response) {
+      clearTimeout(timer)
+      if (!response.ok) throw new Error(`配对失败（HTTP ${response.status}）`)
+      return response.json()
+    }).then(function (info) {
+      if (!info || typeof info.token !== 'string' || info.token === '') throw new Error('配对没有返回令牌')
+      state.settings.token = info.token
+      if (refs.bridgeToken) refs.bridgeToken.value = info.token
+      persistSettings()
+      return info.token
+    }).catch(function (error) {
+      clearTimeout(timer)
+      throw error
+    })
+  }
+
   function checkBridge() {
     setHealth('checking')
     var controller = new AbortController()
@@ -258,8 +298,22 @@
 
   function acceptHealth(info) {
     setHealth('ready')
-    if (info && info.auth === 'token' && state.settings.token === '' && refs.bridgeHint) {
-      refs.bridgeHint.textContent = '桥已连接，但它要求访问令牌：请在下方填写与 DSH 的 REVIEW_DESK_WPS_TOKEN 相同的值。'
+    var needsPair = info && info.auth === 'token' && state.settings.token === ''
+    if (needsPair && info.pairing === true) {
+      pairBridge().then(function () {
+        if (refs.bridgeHint) refs.bridgeHint.textContent = '已自动配对并连接（令牌由本机桥生成，DSH 重启后会自动更新）。'
+        report({ kind: 'wps-pair', ok: true, auto: true })
+        fetchModels()
+        maybeSelfTest()
+      }).catch(function (error) {
+        if (refs.bridgeHint) refs.bridgeHint.textContent = '桥要求访问令牌，但自动配对失败：请在「连接设置」里填写令牌。'
+        report({ kind: 'wps-pair', ok: false, error: String((error && error.message) || error) })
+        fetchModels()
+      })
+      return
+    }
+    if (needsPair) {
+      if (refs.bridgeHint) refs.bridgeHint.textContent = '桥要求访问令牌：请在「连接设置」里填写与 DSH 一致的 REVIEW_DESK_WPS_TOKEN。'
     }
     report({ kind: 'wps-health', ok: true, bridge: state.bridge, auth: info && info.auth, at: new Date().toISOString() })
     fetchModels()
@@ -283,7 +337,7 @@
     }
   }
 
-  function fetchModels() {
+  function fetchModels(retried) {
     if (!refs.settingModel) return
     fetch(`${state.bridge}/models`, { headers: requestHeaders() })
       .then(function (response) {
@@ -305,6 +359,12 @@
         report({ kind: 'wps-models', ok: true, providers: catalog && Array.isArray(catalog.providers) ? catalog.providers.length : 0 })
       })
       .catch(function (error) {
+        if (error && error.status === 401 && retried !== true && state.settings.token === '') {
+          pairBridge().then(function () { fetchModels(true) }).catch(function () {
+            if (refs.settingsHint) refs.settingsHint.textContent = '模型列表需要访问令牌，且自动配对失败：请在「连接设置」里填写令牌。'
+          })
+          return
+        }
         if (refs.settingsHint) {
           refs.settingsHint.textContent = error && error.status === 401
             ? '模型列表需要访问令牌：请在「连接设置」里填写令牌。'
@@ -337,6 +397,8 @@
       original: result.original,
       maxTokens: result.maxTokens,
       applied: result.applied,
+      batch: result.batch,
+      batchSummary: result.batchSummary === true,
     }
   }
 
@@ -386,6 +448,8 @@
           original: typeof item.original === 'string' ? item.original : '',
           maxTokens: Number(item.maxTokens) || 0,
           applied: item.applied && typeof item.applied === 'object' ? item.applied : null,
+          batch: item.batch && typeof item.batch === 'object' ? item.batch : null,
+          batchSummary: item.batchSummary === true,
         }
         restored.push(result)
         if (result.id > state.seq) state.seq = result.id
@@ -467,7 +531,7 @@
 
   function runAnalysis(action, options) {
     options = options || {}
-    if (state.running) {
+    if (state.running && options.force !== true) {
       toast('上一条审核还在进行')
       return null
     }
@@ -506,12 +570,14 @@
       original: options.original || '',
       maxTokens: options.maxTokens !== undefined ? options.maxTokens : state.settings.maxTokens,
       applied: null,
+      batch: options.batch || null,
+      batchSummary: false,
     }
     state.results.unshift(result)
     state.selectedId = result.id
     renderHistory()
     renderDetail(true)
-    setRunning(true)
+    if (!options.quiet) setRunning(true)
     saveHistory()
 
     var payload = buildPayload(action, text, {
@@ -530,17 +596,19 @@
       model: payload.model || '',
       reasoningEffort: payload.reasoningEffort || '',
       maxTokens: payload.maxTokens || 0,
+      batch: options.batch ? options.batch.id : '',
       at: new Date().toISOString(),
     })
 
-    var controller = new AbortController()
-    var timer = setTimeout(function () { controller.abort() }, 185000)
+    var controller = options.signal ? null : new AbortController()
+    var timer = controller ? setTimeout(function () { controller.abort() }, 185000) : 0
+    var signal = options.signal || controller.signal
 
     fetch(`${state.bridge}/analyze`, {
       method: 'POST',
       headers: requestHeaders(),
       body: JSON.stringify(payload),
-      signal: controller.signal,
+      signal: signal,
     }).then(function (response) {
       if (!response.ok) {
         return response.json().then(function (info) {
@@ -556,12 +624,12 @@
       }
       return consumeStream(result, response)
     }).catch(function (error) {
-      clearTimeout(timer)
+      if (timer) clearTimeout(timer)
       finishWithError(result, error)
     }).then(function () {
-      clearTimeout(timer)
+      if (timer) clearTimeout(timer)
       if (result.status === 'running') result.status = 'done'
-      setRunning(false)
+      if (!options.quiet) setRunning(false)
       if (state.selectedId === result.id && state.detailDom) updateDetail(result)
       updateHistoryRow(result)
       renderFilters()
@@ -573,8 +641,22 @@
         chars: result.text.length,
         warning: result.warning,
         error: result.error,
+        batch: options.batch ? options.batch.id : '',
       })
       if (typeof options.onSettled === 'function') options.onSettled(result)
+      // A rotated bridge token is repaired automatically once.
+      if (result.errorKind === 'token' && options._tokenRetried !== true && !options.batch && state.settings.token === '') {
+        state.results = state.results.filter(function (item) { return item.id !== result.id })
+        state.selectedId = state.results.length > 0 ? state.results[0].id : null
+        renderHistory()
+        renderDetail(true)
+        pairBridge().then(function () {
+          if (refs.bridgeHint) refs.bridgeHint.textContent = '令牌已自动更新，正在重试本次审核…'
+          runAnalysis(action, Object.assign({}, options, { _tokenRetried: true }))
+        }).catch(function () {
+          toast('需要访问令牌：请在「连接设置」里填写 REVIEW_DESK_WPS_TOKEN。')
+        })
+      }
     })
     return result
   }
@@ -582,9 +664,12 @@
   function finishWithError(result, error) {
     var aborted = error && error.name === 'AbortError'
     var status = error && error.status ? error.status : 0
-    result.status = 'error'
-    result.errorKind = aborted ? 'timeout' : status === 401 ? 'token' : status ? 'http' : 'network'
-    if (aborted) {
+    var cancelled = aborted && result.batch && state.batch && state.batch.cancelled
+    result.status = cancelled ? 'cancelled' : 'error'
+    result.errorKind = cancelled ? 'cancelled' : aborted ? 'timeout' : status === 401 ? 'token' : status ? 'http' : 'network'
+    if (cancelled) {
+      result.error = '已取消本次分段审阅。'
+    } else if (aborted) {
       result.error = '请求超时（3 分钟）。可以缩短选中文字、提高输出上限后重试。'
     } else if (status === 401) {
       result.error = '需要访问令牌：请在左下「连接设置」里填写 REVIEW_DESK_WPS_TOKEN。'
@@ -763,8 +848,7 @@
       }
       var meta = document.createElement('span')
       meta.className = 'rd-item-meta'
-      meta.textContent = [timeLabel(result.createdAt), result.meta ? String(result.meta.model || '') : '', result.applied ? '已替换' : '']
-        .filter(Boolean).join(' · ')
+      meta.textContent = rowMeta(result)
       main.appendChild(excerpt)
       main.appendChild(meta)
       var stateLabel = document.createElement('span')
@@ -788,6 +872,9 @@
     if (result.status === 'running') {
       node.textContent = '…'
       node.setAttribute('data-running', '')
+    } else if (result.status === 'cancelled') {
+      node.textContent = '取消'
+      node.setAttribute('data-error', '')
     } else if (result.status === 'error') {
       node.textContent = '失败'
       node.setAttribute('data-error', '')
@@ -811,8 +898,7 @@
       row.excerpt.textContent = summary.length > 42 ? `${summary.slice(0, 42)}…` : summary
       row.excerpt.removeAttribute('data-empty')
     }
-    row.meta.textContent = [timeLabel(result.createdAt), result.meta ? String(result.meta.model || '') : '', result.applied ? '已替换' : '']
-      .filter(Boolean).join(' · ')
+    row.meta.textContent = rowMeta(result)
   }
 
   function selectResult(id) {
@@ -968,7 +1054,7 @@
     dom.status.removeAttribute('data-error')
     if (result.status === 'running') dom.status.setAttribute('data-running', '')
     if (result.status === 'error') dom.status.setAttribute('data-error', '')
-    dom.parent.textContent = parentLabel(result)
+    dom.parent.textContent = batchLabel(result) || parentLabel(result)
     dom.parent.style.display = dom.parent.textContent === '' ? 'none' : ''
 
     if (result.status === 'error') {
@@ -1360,6 +1446,439 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * 批量审阅 / 分段
+   * ------------------------------------------------------------------ */
+
+  function rowMeta(result) {
+    var parts = [timeLabel(result.createdAt)]
+    if (result.meta && result.meta.model) parts.push(String(result.meta.model))
+    if (result.batch && result.batch.total > 1) parts.push(`段 ${result.batch.index}/${result.batch.total}`)
+    if (result.batchSummary) parts.push('汇总')
+    if (result.applied) parts.push('已替换')
+    return parts.filter(Boolean).join(' · ')
+  }
+
+  function batchLabel(result) {
+    if (result.batchSummary) return '批量审阅汇总'
+    if (result.batch) return `批量审阅 · 第 ${result.batch.index}/${result.batch.total} 段`
+    return ''
+  }
+
+  /** Split one passage into paragraph/sentence-aligned segments with document offsets. */
+  function splitSegments(text, baseStart, maxChars) {
+    var segments = []
+    var cursor = 0
+    var length = text.length
+    while (cursor < length) {
+      var end = Math.min(length, cursor + maxChars)
+      if (end < length) {
+        var lower = cursor + Math.floor(maxChars * 0.45)
+        var cut = -1
+        for (var i = end; i >= lower; i -= 1) {
+          var ch = text[i]
+          if (ch === '\n' || ch === '\r') { cut = i + 1; break }
+        }
+        if (cut < 0) {
+          for (var j = end; j >= lower; j -= 1) {
+            var c = text[j]
+            if (c === '。' || c === '！' || c === '？' || c === '；') { cut = j + 1; break }
+          }
+        }
+        if (cut > cursor) end = cut
+      }
+      var raw = text.slice(cursor, end)
+      var lead = 0
+      var trail = 0
+      while (lead < raw.length && /\s/u.test(raw[lead])) lead += 1
+      while (trail < raw.length - lead && /\s/u.test(raw[raw.length - 1 - trail])) trail += 1
+      var trimmed = raw.slice(lead, raw.length - trail)
+      if (trimmed.trim() !== '') {
+        segments.push({ start: baseStart + cursor + lead, end: baseStart + cursor + raw.length - trail, text: trimmed })
+      }
+      cursor = end
+    }
+    return segments
+  }
+
+  /** Run the same action over the selection or the whole document, one segment at a time. */
+  function startBatchReview(action, mode, options) {
+    options = options || {}
+    if (state.running) { toast('上一条审核还在进行'); return null }
+    if (state.batch) { toast('已有批量任务在进行'); return null }
+    var doc = getDoc()
+    if (!doc) { toast('没有打开的文档'); return null }
+    var text = ''
+    var baseStart = 0
+    var modeLabel = mode === 'document' ? '整篇' : '选中'
+    if (mode === 'document') {
+      try { text = String(doc.Content.Text || '') } catch (error) { text = '' }
+      if (text.trim() === '') { toast('文档是空的'); return null }
+      if (text.length > DOCUMENT_LIMIT_CHARS) {
+        text = text.slice(0, DOCUMENT_LIMIT_CHARS)
+        toast(`文档过长，只审阅前 ${DOCUMENT_LIMIT_CHARS} 字`)
+      }
+    } else {
+      var selection = options.selection || state.selection
+      if (!selection) { toast('请先在文档中选中一段文字'); return null }
+      text = selection.text
+      baseStart = selection.start
+    }
+    var maxChars = Number(options.maxChars) > 0 ? Math.max(200, Math.round(Number(options.maxChars))) : SEGMENT_CHARS
+    var segments = splitSegments(text, baseStart, maxChars)
+    if (segments.length === 0) { toast('没有可审阅的正文'); return null }
+    var limit = mode === 'document' ? SEGMENT_DOCUMENT_LIMIT : SEGMENT_SELECTION_LIMIT
+    if (segments.length > limit) {
+      segments = segments.slice(0, limit)
+      toast(`段落较多，本次只审阅前 ${limit} 段`)
+    }
+    if (segments.length <= 1) {
+      var single = segments[0] || { start: baseStart, end: baseStart + text.length, text: text }
+      var singleResult = runAnalysis(action, { selection: single })
+      if (singleResult && typeof options.onComplete === 'function') options.onComplete({ single: true, cancelled: false, done: 1, total: 1, results: [singleResult.id], summary: null })
+      return singleResult
+    }
+    var batch = {
+      id: Date.now(),
+      action: action,
+      mode: mode,
+      modeLabel: modeLabel,
+      total: segments.length,
+      done: 0,
+      results: [],
+      resultInfos: [],
+      cancelled: false,
+      controller: null,
+      running: true,
+      options: options,
+    }
+    state.batch = batch
+    setRunning(true)
+    renderBatchBar()
+    report({ kind: 'wps-batch-start', action: action, mode: mode, total: batch.total, chars: text.length })
+    runBatchSegment(batch, segments, 0)
+    return batch
+  }
+
+  function runBatchSegment(batch, segments, index) {
+    if (batch.cancelled || index >= segments.length) { finishBatch(batch); return }
+    var segment = segments[index]
+    var controller = new AbortController()
+    batch.controller = controller
+    var settled = false
+    function onSettled(result) {
+      if (settled) return
+      settled = true
+      batch.done = index + 1
+      batch.results.push(result.id)
+      batch.resultInfos.push({
+        id: result.id,
+        status: result.status,
+        excerpt: (result.text || result.error || '').replace(/\s+/gu, ' ').trim().slice(0, 60),
+      })
+      renderBatchBar()
+      if (batch.cancelled) { finishBatch(batch); return }
+      setTimeout(function () { runBatchSegment(batch, segments, index + 1) }, 200)
+    }
+    runAnalysis(batch.action, {
+      force: true,
+      quiet: true,
+      selection: segment,
+      signal: controller.signal,
+      batch: { id: batch.id, index: index + 1, total: batch.total, mode: batch.mode },
+      onSettled: onSettled,
+    })
+  }
+
+  function finishBatch(batch) {
+    if (!batch || state.batch !== batch) return
+    state.batch = null
+    setRunning(false)
+    renderBatchBar()
+    var summary = null
+    if (!batch.cancelled && batch.done >= batch.total && batch.done > 0) {
+      summary = createBatchSummary(batch)
+    }
+    if (batch.options && typeof batch.options.onComplete === 'function') {
+      batch.options.onComplete({
+        cancelled: batch.cancelled,
+        done: batch.done,
+        total: batch.total,
+        summary: summary,
+        resultInfos: batch.resultInfos,
+      })
+    }
+    report({ kind: 'wps-batch-done', cancelled: batch.cancelled, done: batch.done, total: batch.total })
+    saveHistory()
+  }
+
+  function cancelBatch() {
+    var batch = state.batch
+    if (!batch) return
+    batch.cancelled = true
+    if (batch.controller) {
+      try { batch.controller.abort() } catch (error) { /* ignore */ }
+    }
+    renderBatchBar()
+    toast('已取消批量审阅')
+  }
+
+  function renderBatchBar() {
+    if (!refs.batchBar) return
+    var batch = state.batch
+    if (!batch) {
+      refs.batchBar.hidden = true
+      return
+    }
+    refs.batchBar.hidden = false
+    if (refs.batchText) {
+      refs.batchText.textContent = `${batch.modeLabel}审阅 · ${ACTION_LABELS[batch.action] || batch.action} · ${Math.min(batch.done + 1, batch.total)}/${batch.total}`
+    }
+    if (refs.batchFill) refs.batchFill.style.width = `${Math.round((batch.done / batch.total) * 100)}%`
+    if (refs.btnCancelBatch) refs.btnCancelBatch.disabled = batch.cancelled === true
+  }
+
+  function createBatchSummary(batch) {
+    var lines = []
+    lines.push(`已完成${batch.modeLabel}分段审阅：共 ${batch.done} 段，动作「${ACTION_LABELS[batch.action] || batch.action}」。`)
+    lines.push('')
+    batch.resultInfos.forEach(function (info, index) {
+      var statusLabel = info.status === 'done' ? '完成' : info.status === 'cancelled' ? '取消' : '失败'
+      lines.push(`- 第 ${index + 1} 段（#${info.id} · ${statusLabel}）：${info.excerpt || '（无内容）'}`)
+    })
+    var summary = {
+      id: ++state.seq,
+      action: 'custom',
+      instruction: `分段汇总（${batch.total} 段）`,
+      createdAt: Date.now(),
+      status: 'done',
+      text: lines.join('\n'),
+      stage: '',
+      meta: null,
+      sources: [],
+      note: '',
+      warning: '',
+      error: '',
+      errorKind: '',
+      selection: null,
+      parentId: null,
+      original: '',
+      maxTokens: 0,
+      applied: null,
+      batch: { id: batch.id, index: batch.total, total: batch.total, mode: batch.mode },
+      batchSummary: true,
+    }
+    state.results.unshift(summary)
+    state.selectedId = summary.id
+    renderHistory()
+    renderDetail(true)
+    saveHistory()
+    return summary
+  }
+
+  /** Long selections are segmented automatically when the setting is on. */
+  function runActionSmart(action) {
+    var selection = state.selection
+    if (!selection) {
+      toast('请先在文档中选中一段文字')
+      return
+    }
+    if (state.settings.autoSegment !== false && selection.text.length > SEGMENT_AUTO_THRESHOLD) {
+      startBatchReview(action, 'selection', { selection: selection })
+      return
+    }
+    runAnalysis(action)
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 审核包 / 报告导出
+   * ------------------------------------------------------------------ */
+
+  function safeTitle() {
+    var title = state.docName.replace(/\.[^.]+$/u, '').trim()
+    return (title === '' ? 'review' : title).replace(/[\\/:*?"<>|]+/gu, '-').slice(0, 80)
+  }
+
+  function fileStamp() {
+    var now = new Date()
+    var pad = function (value) { return String(value).padStart(2, '0') }
+    return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`
+  }
+
+  function buildReviewPackage() {
+    var doc = getDoc()
+    var documentText = ''
+    try { documentText = String(doc ? doc.Content.Text || '' : '') } catch (error) { documentText = '' }
+    var title = state.docName.replace(/\.[^.]+$/u, '')
+    return {
+      format: PACKAGE_FORMAT,
+      version: PACKAGE_VERSION,
+      exportedAt: new Date().toISOString(),
+      app: { plugin: 'review-desk', build: 'wps-addin-0.4' },
+      document: { title: title, text: documentText },
+      runs: state.results.filter(function (result) { return result.status !== 'running' }).map(function (result) {
+        return {
+          id: `wps-${result.id}`,
+          action: result.action,
+          instruction: result.instruction,
+          status: result.status === 'error' ? 'error' : result.status === 'cancelled' ? 'cancelled' : 'done',
+          text: result.text,
+          meta: result.meta,
+          sources: result.sources || [],
+          claims: [],
+          selection: result.selection
+            ? { start: result.selection.start, end: result.selection.end, text: result.selection.text }
+            : { start: 0, end: 0, text: '' },
+          replaced: result.applied
+            ? { start: result.applied.start, previous: result.applied.previous, inserted: result.applied.inserted }
+            : null,
+          startedAt: result.createdAt,
+          finishedAt: result.createdAt,
+          warning: result.warning || '',
+          error: result.error || '',
+          batch: result.batch
+            ? { id: String(result.batch.id), index: result.batch.index, total: result.batch.total, mode: result.batch.mode }
+            : null,
+          batchSummary: result.batchSummary === true,
+        }
+      }),
+      session: { instruction: refs.instruction ? refs.instruction.value : '' },
+    }
+  }
+
+  function buildReportMarkdown() {
+    var doc = getDoc()
+    var text = ''
+    try { text = String(doc ? doc.Content.Text || '' : '') } catch (error) { text = '' }
+    var title = state.docName.replace(/\.[^.]+$/u, '')
+    var lines = [
+      `# 审稿报告：${title}`,
+      '',
+      `- 导出时间：${new Date().toLocaleString('zh-CN')}`,
+      `- 文档字数：${text.length}`,
+      `- 结果条数：${state.results.length}`,
+      '',
+    ]
+    state.results.forEach(function (result, index) {
+      var statusLabel = result.status === 'error' ? '失败' : result.status === 'cancelled' ? '取消' : '完成'
+      lines.push(`## ${index + 1}. ${ACTION_LABELS[result.action] || result.action} · ${statusLabel}`)
+      if (result.instruction) lines.push(`- 要求：${result.instruction}`)
+      if (result.batch) lines.push(`- 批量：第 ${result.batch.index}/${result.batch.total} 段`)
+      if (result.selection) {
+        lines.push(`- 原文（${result.selection.text.length} 字）：${result.selection.text.replace(/\s+/gu, ' ').slice(0, 120)}`)
+      }
+      if (result.meta) lines.push(`- 模型：${[result.meta.provider, result.meta.model].filter(Boolean).join(' / ')}`)
+      if (result.warning) lines.push(`- 提示：${result.warning}`)
+      lines.push('')
+      lines.push(result.status === 'error' ? `> ${result.error}` : result.text)
+      if (result.sources && result.sources.length > 0) {
+        lines.push('')
+        lines.push('来源：')
+        result.sources.forEach(function (source, sourceIndex) {
+          lines.push(`- [S${sourceIndex + 1}] ${source.title || source.url || ''}${source.url ? ` — ${source.url}` : ''}`)
+        })
+      }
+      lines.push('')
+    })
+    return lines.join('\n')
+  }
+
+  function setExportBusy(busy) {
+    var buttons = [refs.btnExportPackage, refs.btnExportReport, refs.btnCopyPackage]
+    for (var button of buttons) {
+      if (button) button.disabled = busy === true
+    }
+  }
+
+  function exportFile(kind) {
+    var doc = getDoc()
+    if (!doc) { toast('没有打开的文档'); return Promise.resolve(null) }
+    var payload
+    if (kind === 'package') {
+      var pkg = JSON.stringify(buildReviewPackage(), null, 2)
+      if (pkg.length > PACKAGE_LIMIT) { toast('审核包过大（上限约 8 MB），请先精简结果'); return Promise.resolve(null) }
+      payload = { filename: `${safeTitle()}-${fileStamp()}.review-desk.json`, content: pkg }
+    } else {
+      payload = { filename: `${safeTitle()}-审稿报告-${fileStamp()}.md`, content: buildReportMarkdown() }
+    }
+    setExportBusy(true)
+    return fetch(`${state.bridge}/export`, {
+      method: 'POST',
+      headers: requestHeaders(),
+      body: JSON.stringify(payload),
+    }).then(function (response) {
+      return response.json().then(function (info) {
+        if (!response.ok) throw new Error(info && info.error ? info.error : `HTTP ${response.status}`)
+        return info
+      })
+    }).then(function (info) {
+      if (refs.exportHint) refs.exportHint.textContent = `已写入：${info.path || info.filename || ''}`
+      toast(kind === 'package' ? '审核包已导出' : '审稿报告已导出')
+      report({ kind: 'wps-export', ok: true, format: kind, path: info.path || '', bytes: info.bytes || 0 })
+      return info
+    }).catch(function (error) {
+      var message = (error && error.message) || String(error)
+      if (refs.exportHint) refs.exportHint.textContent = `导出失败：${message}`
+      toast(`导出失败：${message}`)
+      report({ kind: 'wps-export', ok: false, format: kind, error: message })
+      return null
+    }).then(function (info) {
+      setExportBusy(false)
+      return info
+    })
+  }
+
+  function copyPackage() {
+    var pkg = JSON.stringify(buildReviewPackage(), null, 2)
+    if (pkg.length > PACKAGE_LIMIT) { toast('审核包过大，无法复制'); return }
+    copyText(pkg)
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 左栏宽度拖拽
+   * ------------------------------------------------------------------ */
+
+  function applySideWidth(width) {
+    var value = Math.min(SIDE_WIDTH_MAX, Math.max(SIDE_WIDTH_MIN, Math.round(Number(width) || SIDE_WIDTH_DEFAULT)))
+    state.settings.sideWidth = value
+    try { document.documentElement.style.setProperty('--rd-side-width', `${value}px`) } catch (error) { /* ignore */ }
+    return value
+  }
+
+  function initResizer() {
+    var resizer = refs.sideResizer
+    if (!resizer) return
+    var dragging = false
+    var startX = 0
+    var startWidth = 0
+    function onMove(event) {
+      if (!dragging) return
+      applySideWidth(startWidth + (event.clientX - startX))
+    }
+    function onUp() {
+      if (!dragging) return
+      dragging = false
+      resizer.removeAttribute('data-dragging')
+      persistSettings()
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    resizer.addEventListener('mousedown', function (event) {
+      dragging = true
+      startX = event.clientX
+      startWidth = Number(state.settings.sideWidth) || SIDE_WIDTH_DEFAULT
+      resizer.setAttribute('data-dragging', '')
+      document.addEventListener('mousemove', onMove)
+      document.addEventListener('mouseup', onUp)
+      event.preventDefault()
+    })
+    resizer.addEventListener('dblclick', function () {
+      applySideWidth(SIDE_WIDTH_DEFAULT)
+      persistSettings()
+      toast('左栏宽度已复位')
+    })
+  }
+
+  /* ------------------------------------------------------------------ *
    * 渲染辅助
    * ------------------------------------------------------------------ */
 
@@ -1580,10 +2099,50 @@
             warning: child.warning,
             error: child.error,
           })
+          setTimeout(function () { selfTestBatch() }, 500)
         },
       })
       if (revision === null) report({ kind: 'wps-selftest', stage: 'revise', status: 'skipped' })
     }, 600)
+  }
+
+  function selfTestBatch() {
+    applySideWidth(360)
+    persistSettings()
+    report({
+      kind: 'wps-selftest',
+      stage: 'side-width',
+      width: state.settings.sideWidth,
+      layout: layoutInfo(),
+      autoSegment: state.settings.autoSegment !== false,
+    })
+    startBatchReview('logic', 'document', {
+      maxChars: 120,
+      onComplete: function (info) {
+        report({
+          kind: 'wps-selftest',
+          stage: 'batch-done',
+          cancelled: info.cancelled,
+          done: info.done,
+          total: info.total,
+          summaryId: info.summary ? info.summary.id : null,
+          layout: layoutInfo(),
+        })
+        setTimeout(function () {
+          exportFile('package').then(function (pkg) {
+            return exportFile('report').then(function (reportInfo) {
+              report({
+                kind: 'wps-selftest',
+                stage: 'export',
+                packagePath: pkg ? pkg.path : '',
+                reportPath: reportInfo ? reportInfo.path : '',
+                sideWidth: state.settings.sideWidth,
+              })
+            })
+          })
+        }, 300)
+      },
+    })
   }
 
   function report(payload) {
@@ -1627,6 +2186,18 @@
       settingCap: document.getElementById('setting-cap'),
       settingsSummary: document.getElementById('settings-summary'),
       settingsHint: document.getElementById('settings-hint'),
+      settingSegment: document.getElementById('setting-segment'),
+      batchAction: document.getElementById('batch-action'),
+      btnBatch: document.getElementById('btn-batch'),
+      batchBar: document.getElementById('batch-bar'),
+      batchText: document.querySelector('#batch-bar .rd-batch-text'),
+      batchFill: document.querySelector('#batch-bar .rd-batch-fill'),
+      btnCancelBatch: document.getElementById('btn-cancel-batch'),
+      btnExportPackage: document.getElementById('btn-export-package'),
+      btnExportReport: document.getElementById('btn-export-report'),
+      btnCopyPackage: document.getElementById('btn-copy-package'),
+      exportHint: document.getElementById('export-hint'),
+      sideResizer: document.getElementById('side-resizer'),
       actionButtons: Array.prototype.slice.call(document.querySelectorAll('.rd-action')),
     }
 
@@ -1638,7 +2209,9 @@
     if (refs.bridgeUrl) refs.bridgeUrl.value = state.bridge
     state.settings = readSettings()
     if (refs.bridgeToken) refs.bridgeToken.value = state.settings.token
+    applySideWidth(state.settings.sideWidth)
     renderCapOptions()
+    if (refs.settingSegment) refs.settingSegment.checked = state.settings.autoSegment !== false
 
     if (refs.settingModel) {
       refs.settingModel.addEventListener('change', function () {
@@ -1667,10 +2240,16 @@
         persistSettings()
       })
     }
+    if (refs.settingSegment) {
+      refs.settingSegment.addEventListener('change', function () {
+        state.settings.autoSegment = refs.settingSegment.checked === true
+        persistSettings()
+      })
+    }
 
     for (var button of refs.actionButtons) {
       button.addEventListener('click', (function (action) {
-        return function () { runAnalysis(action) }
+        return function () { runActionSmart(action) }
       })(button.getAttribute('data-action')))
     }
     if (refs.btnCustom) {
@@ -1716,6 +2295,17 @@
       })
     }
     if (refs.btnCheck) refs.btnCheck.addEventListener('click', checkBridge)
+    if (refs.btnBatch) {
+      refs.btnBatch.addEventListener('click', function () {
+        var action = refs.batchAction ? refs.batchAction.value : 'logic'
+        startBatchReview(action, 'document')
+      })
+    }
+    if (refs.btnCancelBatch) refs.btnCancelBatch.addEventListener('click', cancelBatch)
+    if (refs.btnExportPackage) refs.btnExportPackage.addEventListener('click', function () { exportFile('package') })
+    if (refs.btnExportReport) refs.btnExportReport.addEventListener('click', function () { exportFile('report') })
+    if (refs.btnCopyPackage) refs.btnCopyPackage.addEventListener('click', copyPackage)
+    initResizer()
     window.addEventListener('keydown', onKeydown)
 
     state.results = loadHistory()
@@ -1735,7 +2325,7 @@
 
     report({
       kind: 'wps-taskpane',
-      version: '0.3',
+      version: '0.4',
       loaded: true,
       hasApp: !!getApp(),
       docName: state.docName,
