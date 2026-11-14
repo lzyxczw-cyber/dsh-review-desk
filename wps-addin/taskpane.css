@@ -213,7 +213,8 @@ select { color: var(--rd-fg); background: var(--rd-bg); }
 .rd-shortcut-hint { margin: 0; font-size: 10px; color: var(--rd-fg-3); }
 
 /* ---- history ---- */
-.rd-history-head { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; }
+.rd-history-head { display: flex; align-items: center; gap: 8px; justify-content: flex-start; margin-top: 2px; }
+.rd-history-head #btn-clear { margin-left: auto; }
 .rd-search {
   width: 100%;
   border: 1px solid var(--rd-border);
