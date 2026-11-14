@@ -42,8 +42,8 @@
     {
       "name": "@local/review-desk",
       "title": {
-        "zh": "文稿审核台",
-        "en": "Review desk"
+        "zh": "审悦",
+        "en": "ShenYue"
       },
       "description": {
         "zh": "三栏审稿工作台：来源查证、逻辑分析、扩写、关联分析与自由改写；编辑区按块渲染表格与图片，点哪段改哪段；导入 docx/pdf 保留结构，审核包可携带全部过程。",

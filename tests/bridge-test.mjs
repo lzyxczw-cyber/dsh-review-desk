@@ -10,6 +10,7 @@ const EXPORT_DIR = `/tmp/review-desk-wps-test-${process.pid}`
 process.env.REVIEW_DESK_WPS_BRIDGE = '1'
 process.env.REVIEW_DESK_WPS_BRIDGE_PORT = '47839'
 process.env.REVIEW_DESK_WPS_EXPORT_DIR = EXPORT_DIR
+process.env.REVIEW_DESK_WPS_TOKEN_FILE = `${EXPORT_DIR}-token`
 delete process.env.REVIEW_DESK_WPS_TOKEN
 delete process.env.REVIEW_DESK_WPS_BRIDGE_AUTH
 
@@ -116,7 +117,9 @@ const paired = await fetch(`${BASE}/pair`, { headers: { ...LOOPBACK, 'x-review-d
 assert.equal(paired.status, 200)
 const token = (await paired.json()).token
 assert.match(token, /^[a-f0-9]{36}$/u)
-console.log('ok  pair returns an auto token')
+// The auto token is persisted for later DSH restarts (fixed token).
+assert.equal(fs.readFileSync(process.env.REVIEW_DESK_WPS_TOKEN_FILE, 'utf8').trim(), token)
+console.log('ok  pair returns a persisted token')
 
 const AUTH = { 'x-review-desk-token': token }
 const withoutToken = await fetch(`${BASE}/models`)
@@ -202,5 +205,6 @@ assert.equal((await fetch(`${BASE}/nope`, { headers: AUTH })).status, 404)
 console.log('ok  unknown route')
 
 fs.rmSync(EXPORT_DIR, { recursive: true, force: true })
+fs.rmSync(process.env.REVIEW_DESK_WPS_TOKEN_FILE, { force: true })
 console.log('\nall bridge checks passed')
 process.exit(0)

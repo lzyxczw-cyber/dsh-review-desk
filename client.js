@@ -12,19 +12,21 @@ window.__ModuleLoader__.load({
     /** Id shared by the sidebar entry and the main panel it opens. */
     const PANEL_ID = 'review-desk'
     /** Build tag, surfaced in the page attribute and the console. */
-    const BUILD = '2026-11-13.14'
+    const BUILD = '2026-11-14.1'
     /** Locale namespace owned by this plugin. */
     const NS = 'reviewDesk'
     /** Authenticated route the Host half registered. */
     const ANALYZE_ROUTE = 'api/review-desk/analyze'
     /** Original-page rendering route. */
     const PAGES_ROUTE = 'api/review-desk/original-pages'
+    /** Installs / inspects the WPS add-in on this machine. */
+    const WPS_ROUTE = 'api/review-desk/wps-addin'
     /** Persistence key; a version bump discards older shapes. */
     const STORAGE_KEY = 'dsh.review-desk.v1'
 
     const ZH = {
-      panel: '文稿审核台',
-      title: '文稿审核台',
+      panel: '审悦',
+      title: '审悦',
       subtitle: '选中左侧文字，在右侧完成查证、逻辑、扩写与关联。',
       importFile: '导入文稿',
       importPackage: '导入审核包',
@@ -44,6 +46,16 @@ window.__ModuleLoader__.load({
       exportMd: '导出 Markdown',
       importedPackage: '审核包已导入',
       exportFile: '导出',
+      wpsMenu: 'WPS 版',
+      wpsInstall: '安装 WPS 加载项',
+      wpsInstallDesc: '把审悦装进本机 WPS 文字',
+      wpsStatus: '查看安装状态',
+      wpsUninstall: '卸载 WPS 加载项',
+      wpsInstalled: 'WPS 加载项已安装：{path}。重启 WPS 后在「审悦」功能区打开审稿台。',
+      wpsUninstalled: '已卸载 WPS 加载项。',
+      wpsStatusOk: 'WPS 加载项已安装（v{version}）。',
+      wpsNotInstalled: '尚未安装 WPS 加载项。',
+      wpsFailed: 'WPS 加载项操作失败：{message}',
       copyAll: '复制全文',
       clear: '清空',
       clearArmed: '确认清空',
@@ -188,8 +200,8 @@ window.__ModuleLoader__.load({
     }
 
     const EN = {
-      panel: 'Review desk',
-      title: 'Review desk',
+      panel: 'ShenYue',
+      title: 'ShenYue',
       subtitle: 'Select text on the left; verify, examine, expand, and connect it on the right.',
       importFile: 'Import',
       importPackage: 'Import review package',
@@ -209,6 +221,16 @@ window.__ModuleLoader__.load({
       exportMd: 'Export Markdown',
       importedPackage: 'Review package imported',
       exportFile: 'Export',
+      wpsMenu: 'WPS edition',
+      wpsInstall: 'Install WPS add-in',
+      wpsInstallDesc: 'Install ShenYue into local WPS Writer',
+      wpsStatus: 'Check install status',
+      wpsUninstall: 'Uninstall WPS add-in',
+      wpsInstalled: 'WPS add-in installed at {path}. Restart WPS and open the review pane from the ShenYue ribbon tab.',
+      wpsUninstalled: 'WPS add-in removed.',
+      wpsStatusOk: 'WPS add-in installed (v{version}).',
+      wpsNotInstalled: 'The WPS add-in is not installed yet.',
+      wpsFailed: 'WPS add-in action failed: {message}',
       copyAll: 'Copy all',
       clear: 'Clear',
       clearArmed: 'Confirm clear',
@@ -5068,6 +5090,31 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
         showNotice(t('cleared'))
       }, [armClear, disarmClear, showNotice, t])
 
+      /** Install / inspect / remove the WPS add-in on this machine. */
+      const runWpsAddin = useCallback(async (action) => {
+        try {
+          const response = await fetch(new URL(WPS_ROUTE, document.baseURI).toString(), {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ action }),
+          })
+          const info = await response.json().catch(() => ({}))
+          if (!response.ok) {
+            throw new Error(typeof info?.error === 'string' ? info.error : `HTTP ${response.status}`)
+          }
+          if (action === 'install') {
+            showNotice(t('wpsInstalled').replace('{path}', info.target ?? ''))
+          } else if (action === 'uninstall') {
+            showNotice(t('wpsUninstalled'))
+          } else {
+            showNotice(info.installed ? t('wpsStatusOk').replace('{version}', info.version ?? '') : t('wpsNotInstalled'))
+          }
+        } catch (error) {
+          showNotice(t('wpsFailed').replace('{message}', error instanceof Error ? error.message : String(error)))
+        }
+      }, [showNotice, t])
+
       const chars = charCount(snapshot.text)
       const paragraphs = paragraphCount(snapshot.text)
       const minutes = Math.max(1, Math.round(chars / 400))
@@ -5114,6 +5161,14 @@ html[data-platform='darwin'] .rd-header { padding-top: calc(26px + var(--dsh-fra
               items: [
                 { key: 'md', label: t('exportMd'), description: '.md', onSelect: exportFile },
                 { key: 'package', label: t('exportPackage'), description: '.json', onSelect: exportPackageFile },
+              ],
+            }),
+            h(ToolbarMenu, {
+              label: t('wpsMenu'),
+              items: [
+                { key: 'wps-install', label: t('wpsInstall'), description: t('wpsInstallDesc'), onSelect: () => runWpsAddin('install') },
+                { key: 'wps-status', label: t('wpsStatus'), onSelect: () => runWpsAddin('status') },
+                { key: 'wps-uninstall', label: t('wpsUninstall'), onSelect: () => runWpsAddin('uninstall') },
               ],
             }),
             h(InlineButton, {

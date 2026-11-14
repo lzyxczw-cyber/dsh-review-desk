@@ -83,7 +83,7 @@ function mount({ seed, fetchImpl, catalog = DEFAULT_CATALOG, widths, mode = 'sou
   assert.ok(registry['sidebar.panellist'], 'sidebar entry registered')
   assert.equal(registry['sidebar.panellist'].options.id, 'review-desk')
   assert.equal(registry['main'].options.key, 'review-desk')
-  assert.equal(registry['sidebar.panellist'].options.label(), '文稿审核台')
+  assert.equal(registry['sidebar.panellist'].options.label(), '审悦')
 
   const container = document.createElement('div')
   container.className = 'test-root'
@@ -321,7 +321,7 @@ await test('empty state renders and offers the sample', async () => {
   const page = mount()
   await page.render()
   assert.ok(page.container.querySelector('.rd-page'), 'page root')
-  assert.equal(page.container.querySelector('.rd-title').textContent, '文稿审核台')
+  assert.equal(page.container.querySelector('.rd-title').textContent, '审悦')
   assert.ok(page.container.textContent.includes('还没有文稿'))
   const buttons = queryAll(page.container, '.rd-empty-actions .rd-button').map(node => node.textContent)
   assert.deepEqual(buttons, ['载入示例', '导入文稿'])

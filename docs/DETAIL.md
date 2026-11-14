@@ -1,8 +1,8 @@
-![Review desk: three columns, with a table rendered in the edit view](preview.svg)
+![ShenYue: three columns, with a table rendered in the edit view](preview.svg)
 
 ## What it solves
 
-One manuscript has to pass source checks, logic review, wording, and consistency, and the traces usually end up in comments, chat, and a second document. Review desk keeps "read — ask — decide — apply" in one three-column workspace: the manuscript on the left, the review actions in the middle, and every result on the right.
+One manuscript has to pass source checks, logic review, wording, and consistency, and the traces usually end up in comments, chat, and a second document. ShenYue keeps "read — ask — decide — apply" in one three-column workspace: the manuscript on the left, the review actions in the middle, and every result on the right.
 
 ## How it works
 

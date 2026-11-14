@@ -1,8 +1,8 @@
-# 文稿审核台 · WPS 加载项（wps 分支 · v0.4）
+# 审悦 · WPS 加载项（wps 分支 · v0.5）
 
 在 WPS 文字里直接审稿：选中一段文字 → 四项分析 / 自由要求 → 结果以**批注**或**修订替换**写回当前文档。文档始终是 WPS 里的真 `.docx`，格式、字体、段落、撤销重做全部原生保留。
 
-> 这是 `review-desk` 仓库 `wps` 分支的实验功能，不与 `main` 合并；DSH 插件（文稿审核台面板 / `review_manuscript` 工具）照常可用。
+> 这是 `review-desk` 仓库 `wps` 分支的实验功能，不与 `main` 合并；DSH 插件（审悦面板 / `review_manuscript` 工具）照常可用。
 
 ## 组成
 
@@ -17,7 +17,7 @@ review-desk/
     └── taskpane.css
 ```
 
-## 功能（v0.4）
+## 功能（v0.5）
 
 - **两栏任务窗格**：默认停靠右侧；左栏设置 / 选区 / 执行 / 历史列表，右栏为选中结果的详情与写回操作。窗格较窄（<640px）时自动堆叠为一栏；左栏宽度可拖拽调整（双击复位，自动记忆）；
 - **分析**：来源查证 / 逻辑分析 / 扩写 / 关联分析 / 自由要求，流式显示；
@@ -28,9 +28,10 @@ review-desk/
 - **追加要求**：任意结果可继续提要求（如"再压缩到 40 字"），形成修订链，子结果标注「基于 #N」；
 - **定位回原文**：选中文档中对应原文、滚动定位并短暂高亮；
 - **快捷键**：⌘/Ctrl+Enter 执行（自由要求优先 / 否则重跑选中结果）、⌘/Ctrl+K 搜索、Esc 退出输入；
-- **审核包 / 报告导出**：一键导出与 DSH 文稿审核台兼容的 `.review-desk.json` 审核包，或 Markdown 审稿报告；文件由本机桥写入 DSH 导出目录（默认 `~/Documents/ReviewDeskExports`，可用 `REVIEW_DESK_WPS_EXPORT_DIR` 改）；
-- **长文分段审阅**：选中文字超过 1200 字（可在设置关闭）时自动按段落/句子切段、逐段审核并汇总；单段上限 900 字；
-- **整篇批量审阅**：按段落切分整篇文档，顺序审阅（最多 40 段 / 6 万字），带进度条，可随时取消，结束后生成本地汇总结果；
+- **审核包 / 报告导出**：一键导出与 DSH 审悦兼容的 `.review-desk.json` 审核包，或 Markdown 审稿报告；文件由本机桥写入 DSH 导出目录（默认 `~/Documents/ReviewDeskExports`，可用 `REVIEW_DESK_WPS_EXPORT_DIR` 改）；
+- **审核包导入**：`导出` 菜单 → 导入审核包，把 DSH 或 WPS 导出的 JSON 结果重新载入面板继续审；
+- **长文分段审阅**：选中文字超过 1200 字（可在设置关闭）时自动按段落/句子切段、逐段审核并汇总；设置里可选 600/900/1200/1600 字/段；
+- **整篇批量审阅**：按段落切分整篇文档，顺序审阅（最多 40 段 / 6 万字），带进度条；取消后可「继续」从断点续跑；结束后生成本地汇总结果；
 - **连接设置**：可改本机桥地址（默认 `127.0.0.1:47831`）与访问令牌；
 - **安全加固（默认开启）**：桥只接受回环来源（`127.0.0.1` / `localhost` / 打包后的 `file://`）；令牌自动生成、面板自动配对（DSH 重启后自动更新）；也可用 `REVIEW_DESK_WPS_TOKEN` 指定固定令牌，或 `REVIEW_DESK_WPS_BRIDGE_AUTH=open` 关闭校验。
 
@@ -41,6 +42,7 @@ review-desk/
    - `GET /health` → `{"ok":true,"service":"review-desk-wps-bridge","auth":"token","pairing":true,"exportDir":"…"}`
    - `GET /pair`（需 `x-review-desk-pair: 1` 且回环来源）→ 自动生成的访问令牌
    - `GET /models` → 默认模型、可选模型/推理等级、各动作输出上限
+  - `GET /addin/...` → 由桥提供加载项页面（安装后 WPS 从这里加载）
    - `POST /export` → 把审核包 / 报告写进导出目录
 3. 可用 `REVIEW_DESK_WPS_BRIDGE=0` 关闭桥、`REVIEW_DESK_WPS_BRIDGE_PORT` 改端口；
    令牌默认自动生成（面板自动配对）；`REVIEW_DESK_WPS_TOKEN=<随机串>` 指定固定令牌；`REVIEW_DESK_WPS_BRIDGE_AUTH=open` 关闭校验；

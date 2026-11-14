@@ -18,7 +18,9 @@
 
 import http from 'node:http'
 import { randomBytes, timingSafeEqual } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -42,6 +44,187 @@ const PAGE_RENDER = {
 /** `REVIEW_DESK_WPS_BRIDGE_AUTH=open` restores the old no-token behaviour. */
 const WPS_BRIDGE_AUTH_OPEN = (process.env.REVIEW_DESK_WPS_BRIDGE_AUTH ?? '').trim().toLowerCase() === 'open'
 const WPS_BRIDGE_TOKEN_ENV = (process.env.REVIEW_DESK_WPS_TOKEN ?? '').trim()
+const WPS_BRIDGE_TOKEN_FILE = (process.env.REVIEW_DESK_WPS_TOKEN_FILE ?? '').trim()
+  || path.join(os.homedir(), '.dsh', 'review-desk', 'wps-bridge-token')
+
+/**
+ * Explicit token wins; `auth=open` disables auth; otherwise reuse (or create)
+ * a random token persisted next to the DSH profile, so it survives restarts.
+ */
+function resolveBridgeToken() {
+  if (WPS_BRIDGE_AUTH_OPEN) return ''
+  if (WPS_BRIDGE_TOKEN_ENV !== '') return WPS_BRIDGE_TOKEN_ENV
+  try {
+    if (existsSync(WPS_BRIDGE_TOKEN_FILE)) {
+      const stored = readFileSync(WPS_BRIDGE_TOKEN_FILE, 'utf8').trim()
+      if (/^[a-f0-9]{16,}$/iu.test(stored)) return stored
+    }
+  } catch { /* fall through to a fresh token */ }
+  const created = randomBytes(18).toString('hex')
+  try {
+    mkdirSync(path.dirname(WPS_BRIDGE_TOKEN_FILE), { recursive: true })
+    writeFileSync(WPS_BRIDGE_TOKEN_FILE, `${created}\n`, { encoding: 'utf8', mode: 0o600 })
+  } catch { /* keep the in-memory token even if persistence fails */ }
+  return created
+}
+
+/** Installs the bundled WPS add-in into the local WPS add-in directory. */
+const WPS_ADDIN_PATH = '/api/review-desk/wps-addin'
+const WPS_ADDIN_NAME = 'wps-review-desk'
+const WPS_ADDIN_SOURCE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'wps-addin')
+const WPS_ADDIN_FILES = ['index.html', 'main.js', 'ribbon.xml', 'package.json', 'taskpane.html', 'taskpane.js', 'taskpane.css']
+
+/** WPS add-in directory for this platform (override with REVIEW_DESK_WPS_JSADDONS_DIR). */
+function wpsAddinRoot() {
+  const override = (process.env.REVIEW_DESK_WPS_JSADDONS_DIR ?? '').trim()
+  if (override !== '') return override
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Containers', 'com.kingsoft.wpsoffice.mac', 'Data', '.kingsoft', 'wps', 'jsaddons')
+  }
+  if (process.platform === 'win32') {
+    return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'kingsoft', 'wps', 'jsaddons')
+  }
+  return path.join(os.homedir(), '.local', 'share', 'Kingsoft', 'wps', 'jsaddons')
+}
+
+async function readWpsAddinVersion() {
+  try {
+    const text = await readFile(path.join(WPS_ADDIN_SOURCE_DIR, 'package.json'), 'utf8')
+    const parsed = JSON.parse(text)
+    return typeof parsed.version === 'string' ? parsed.version : '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
+}
+
+function wpsAddinDirName(version) {
+  return `${WPS_ADDIN_NAME}_${version}`
+}
+
+function wpsPublishEntry(version) {
+  // WPS loads the add-in from the local DSH bridge so file:// pages do not have
+  // to call http://127.0.0.1 (which its CEF build blocks as a cross-origin fetch).
+  // The `jspluginonline` + `enable_dev` shape is the one WPS accepts for a
+  // loopback HTTP add-in; a plain `jsplugin` entry only handles local folders.
+  return `  <jspluginonline name="${WPS_ADDIN_NAME}" type="wps" url="http://127.0.0.1:${WPS_BRIDGE.port}/addin/" debug="" enable="enable_dev" install="null" version="${version}"/>`
+}
+
+async function readPublishXml(publishPath) {
+  try {
+    return await readFile(publishPath, 'utf8')
+  } catch {
+    return ''
+  }
+}
+
+/** Merge (or replace) this add-in's entry inside publish.xml. */
+function mergePublishXml(existing, entry) {
+  let xml = typeof existing === 'string' ? existing.trim() : ''
+  if (xml === '') {
+    xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<jsplugins>\n</jsplugins>'
+  }
+  const entryRegex = new RegExp(`<jsplugin(?:online)?[^>]*name="${WPS_ADDIN_NAME}"[^>]*/>`, 'u')
+  xml = entryRegex.test(xml)
+    ? xml.replace(entryRegex, entry.trim())
+    : xml.replace(/<\/jsplugins>/u, `${entry}\n</jsplugins>`)
+  return xml.endsWith('\n') ? xml : `${xml}\n`
+}
+
+/** Current install state of the WPS add-in for this machine. */
+async function wpsAddinStatus() {
+  const root = wpsAddinRoot()
+  const version = await readWpsAddinVersion()
+  const target = path.join(root, wpsAddinDirName(version))
+  const publishPath = path.join(root, 'publish.xml')
+  let installed = false
+  let files = 0
+  try {
+    const entries = await readdir(target)
+    files = entries.length
+    installed = entries.includes('index.html')
+  } catch { /* not installed */ }
+  const publish = await readPublishXml(publishPath)
+  const listed = publish !== '' && publish.includes(`name="${WPS_ADDIN_NAME}"`)
+  let trusted = false
+  try {
+    const auth = await readFile(path.join(root, 'authaddin.json'), 'utf8')
+    trusted = auth.includes(WPS_ADDIN_NAME)
+  } catch { /* no auth file yet */ }
+  return {
+    platform: process.platform,
+    dir: root,
+    target: `http://127.0.0.1:${WPS_BRIDGE.port}/addin/`,
+    publishPath,
+    installed: listed,
+    listed,
+    trusted,
+    version,
+    files,
+    needRestart: listed,
+  }
+}
+
+/** Copy the bundled wps-addin directory into WPS and register it in publish.xml. */
+async function installWpsAddin() {
+  try {
+    await stat(WPS_ADDIN_SOURCE_DIR)
+  } catch {
+    throw new Error('插件包内缺少 wps-addin 目录。')
+  }
+  const root = wpsAddinRoot()
+  const version = await readWpsAddinVersion()
+  const publishPath = path.join(root, 'publish.xml')
+  const merged = mergePublishXml(await readPublishXml(publishPath), wpsPublishEntry(version))
+  await mkdir(root, { recursive: true })
+  await writeFile(publishPath, merged, 'utf8')
+  return wpsAddinStatus()
+}
+
+/** Remove the WPS add-in directory and its publish entry. */
+async function uninstallWpsAddin() {
+  const root = wpsAddinRoot()
+  try {
+    const entries = await readdir(root)
+    for (const entry of entries) {
+      if (entry === WPS_ADDIN_NAME || entry.startsWith(`${WPS_ADDIN_NAME}_`)) {
+        await rm(path.join(root, entry), { recursive: true, force: true })
+      }
+    }
+  } catch { /* nothing to remove */ }
+  const publishPath = path.join(root, 'publish.xml')
+  const existing = await readPublishXml(publishPath)
+  if (existing !== '') {
+    const cleaned = existing.replace(new RegExp(`\\s*<jsplugin(?:online)?[^>]*name="${WPS_ADDIN_NAME}"[^>]*/>\\s*`, 'u'), '\n')
+    if (!/<jsplugin(?:online)?\b/u.test(cleaned)) await rm(publishPath, { force: true })
+    else await writeFile(publishPath, cleaned, 'utf8')
+    return wpsAddinStatus()
+  }
+  const status = await wpsAddinStatus()
+  const finalStatus = await wpsAddinStatus()
+  finalStatus.removedPublish = !existsSync(publishPath)
+  return finalStatus
+}
+
+/** One POST route for install / uninstall / status, driven by the DSH panel. */
+async function handleWpsAddinRequest(fetchRequest) {
+  if (fetchRequest.method !== 'POST') {
+    return new Response(null, { status: 405, headers: { allow: 'POST' } })
+  }
+  let payload = {}
+  try {
+    payload = await fetchRequest.json()
+  } catch {
+    payload = {}
+  }
+  const action = typeof payload?.action === 'string' ? payload.action : 'status'
+  try {
+    if (action === 'install') return jsonResponse(await installWpsAddin())
+    if (action === 'uninstall') return jsonResponse(await uninstallWpsAddin())
+    return jsonResponse(await wpsAddinStatus())
+  } catch (error) {
+    return jsonResponse({ error: messageOf(error) }, 500)
+  }
+}
 
 /** Loopback bridge that lets the WPS add-in (`wps-addin/`) reuse this host. */
 const WPS_BRIDGE = {
@@ -51,8 +234,9 @@ const WPS_BRIDGE = {
   timeoutMs: 180_000,
   enabled: process.env.REVIEW_DESK_WPS_BRIDGE !== '0',
   authOpen: WPS_BRIDGE_AUTH_OPEN,
-  /** Auto-generated unless disabled; the panel pairs automatically via `/pair`. */
-  token: WPS_BRIDGE_AUTH_OPEN ? '' : (WPS_BRIDGE_TOKEN_ENV || randomBytes(18).toString('hex')),
+  /** Persisted random token unless explicitly configured; the panel pairs automatically. */
+  token: resolveBridgeToken(),
+  tokenFile: WPS_BRIDGE_TOKEN_FILE,
   /** Where exported review packages / reports are written. */
   exportDir: (process.env.REVIEW_DESK_WPS_EXPORT_DIR ?? '').trim()
     || path.join(os.homedir(), 'Documents', 'ReviewDeskExports'),
@@ -895,6 +1079,33 @@ function startWpsBridge(ctx) {
       response.end(JSON.stringify({ ok: true, token: WPS_BRIDGE.token }))
       return
     }
+    if (request.method === 'GET' && (url.pathname === '/addin' || url.pathname === '/addin/' || url.pathname.startsWith('/addin/'))) {
+      const relative = url.pathname.replace(/^\/addin\/?/u, '') || 'index.html'
+      const target = path.normalize(path.join(WPS_ADDIN_SOURCE_DIR, relative))
+      const allowed = target === WPS_ADDIN_SOURCE_DIR || target.startsWith(`${WPS_ADDIN_SOURCE_DIR}${path.sep}`)
+      if (!allowed) {
+        response.writeHead(404, { ...headers, 'content-type': 'text/plain; charset=utf-8' })
+        response.end('not found')
+        return
+      }
+      try {
+        const content = await readFile(target)
+        const mime = {
+          '.html': 'text/html; charset=utf-8',
+          '.js': 'text/javascript; charset=utf-8',
+          '.css': 'text/css; charset=utf-8',
+          '.json': 'application/json; charset=utf-8',
+          '.xml': 'application/xml; charset=utf-8',
+          '.svg': 'image/svg+xml',
+        }[path.extname(target).toLowerCase()] ?? 'application/octet-stream'
+        response.writeHead(200, { ...headers, 'content-type': mime })
+        response.end(content)
+      } catch {
+        response.writeHead(404, { ...headers, 'content-type': 'text/plain; charset=utf-8' })
+        response.end('not found')
+      }
+      return
+    }
     if (!bridgeTokenMatches(request)) {
       response.writeHead(401, { ...headers, 'content-type': 'application/json; charset=utf-8' })
       response.end(JSON.stringify({ error: '需要访问令牌：请在面板「连接设置」里填写 REVIEW_DESK_WPS_TOKEN。' }))
@@ -982,7 +1193,7 @@ function startWpsBridge(ctx) {
   server.listen(WPS_BRIDGE.port, '127.0.0.1', () => {
     console.info(`[review-desk] WPS bridge on http://127.0.0.1:${WPS_BRIDGE.port}`)
     if (!WPS_BRIDGE.authOpen && WPS_BRIDGE_TOKEN_ENV === '') {
-      console.info(`[review-desk] WPS bridge auth token (auto-generated): ${WPS_BRIDGE.token}`)
+      console.info(`[review-desk] WPS bridge token (persisted at ${WPS_BRIDGE.tokenFile})`)
     }
     console.info(`[review-desk] WPS export directory: ${WPS_BRIDGE.exportDir}`)
   })
@@ -1022,13 +1233,84 @@ function install(ctx) {
   )
 
   ctx.effect(
+    () => ctx.connection.fetch.register({
+      path: WPS_ADDIN_PATH,
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: request => handleWpsAddinRequest(request),
+    }),
+    'review-desk: WPS add-in route',
+  )
+
+  ctx.effect(
+    () => ctx.tools.register({
+      name: 'install_wps_addin',
+      description: [
+        '安装/检查/卸载本机的 WPS 文字加载项（审悦 WPS 版）。',
+        '用户想把审悦装到 WPS 里、或询问 WPS 版是否已安装时使用；安装后需重启 WPS 生效。',
+      ].join(''),
+      parameters: {
+        type: 'object',
+        properties: {
+          action: {
+            type: 'string',
+            enum: ['status', 'install', 'uninstall'],
+            description: 'status 查看安装状态，install 安装，uninstall 卸载。',
+          },
+        },
+        required: ['action'],
+        additionalProperties: false,
+      },
+      output: {
+        schema: {
+          type: 'object',
+          properties: {
+            installed: { type: 'boolean' },
+            listed: { type: 'boolean' },
+            trusted: { type: 'boolean' },
+            version: { type: 'string' },
+            dir: { type: 'string' },
+            target: { type: 'string' },
+            publishPath: { type: 'string' },
+            needRestart: { type: 'boolean' },
+            error: { type: 'string' },
+          },
+        },
+        render: (_args, value) => [{
+          type: 'text',
+          text: typeof value?.error === 'string'
+            ? `WPS 加载项操作失败：${value.error}`
+            : [
+              value.installed ? `已安装到 ${value.target}` : '尚未安装 WPS 加载项',
+              value.listed ? 'publish.xml 已登记' : 'publish.xml 未登记',
+              value.trusted ? 'WPS 已信任该加载项' : '首次加载时需在 WPS 中确认信任',
+              value.needRestart ? '重启 WPS 后生效' : '',
+            ].filter(Boolean).join('；'),
+        }],
+      },
+      async execute(args) {
+        try {
+          const action = args?.action === 'install' || args?.action === 'uninstall' ? args.action : 'status'
+          if (action === 'install') return await installWpsAddin()
+          if (action === 'uninstall') return await uninstallWpsAddin()
+          return await wpsAddinStatus()
+        } catch (error) {
+          return { error: messageOf(error), installed: false, listed: false, trusted: false, version: '', dir: '', target: '', publishPath: '', needRestart: false }
+        }
+      },
+      isConcurrencySafe: () => false,
+    }),
+    'review-desk: install_wps_addin tool',
+  )
+
+  ctx.effect(
     () => ctx.tools.register({
       name: 'review_manuscript',
       description: [
         '审核一段中文文稿：action=source 核查事实来源，action=logic 分析论证逻辑，',
         'action=expand 扩写为可直接入稿的文字，action=relate 分析与全文其他部分的关联，',
         'action=custom 按 instruction 里的具体要求处理（改写口径、压缩、调整语气等）。',
-        '结果与「文稿审核台」面板中同一操作完全一致；用户明确要求审核文稿时使用它。',
+        '结果与「审悦」面板中同一操作完全一致；用户明确要求审核文稿时使用它。',
       ].join(''),
       parameters: {
         type: 'object',
@@ -1090,3 +1372,5 @@ export const inject = ['connection', 'tools']
 export function apply(ctx) {
   ctx.inject(['llm', 'agentDefaultModel'], install)
 }
+
+export { installWpsAddin, uninstallWpsAddin, wpsAddinStatus }

@@ -15,7 +15,7 @@ const here = path.dirname(new URL(import.meta.url).pathname)
 const PANEL_DIR = path.join(here, '..', 'wps-addin')
 const HTML = fs.readFileSync(path.join(PANEL_DIR, 'taskpane.html'), 'utf8')
 const SCRIPT = fs.readFileSync(path.join(PANEL_DIR, 'taskpane.js'), 'utf8')
-const HISTORY_KEY = 'wps-review-desk.history.v3'
+const HISTORY_KEY = 'wps-review-desk.history.v4'
 const SETTINGS_KEY = 'wps-review-desk.settings.v2'
 
 const BASE_TEXT = '第一段：这是用于测试的原文。\n第二段：后续内容。'
@@ -226,7 +226,7 @@ function createFetch({ warningActions, analyze, healthAuth = 'open', hangAnalyze
         const custom = analyze(payload, calls)
         if (custom !== undefined) return custom
       }
-      if (typeof hangAnalyze === 'function' && hangAnalyze(payload)) {
+      if (typeof hangAnalyze === 'function' && hangAnalyze(payload, calls)) {
         return new Promise((resolve, reject) => {
           if (init.signal) {
             init.signal.addEventListener('abort', () => {
@@ -608,20 +608,28 @@ await test('whole-document batch review runs segments and creates a summary', as
   page.dom.window.close()
 })
 
-await test('cancel batch review stops and marks the run cancelled', async () => {
-  const longText = '第一段：这是一段用于取消测试的正文。'.repeat(120)
+await test('cancel batch review can be resumed from the paused bar', async () => {
+  const longText = '第一段：这是一段用于取消测试的正文内容。'.repeat(120)
   const page = await mount({
     text: longText,
-    fetchOptions: { hangAnalyze: () => true },
+    fetchOptions: {
+      // Only the very first segment hangs; resumed segments complete normally.
+      hangAnalyze: (payload, calls) => calls.filter(entry => entry.kind === 'analyze').length === 1,
+    },
   })
   await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
   page.button('整篇审阅', page.container).click()
   await page.waitFor(() => page.container.querySelector('#batch-bar').hidden === false, 'batch bar visible')
   page.button('取消', page.container).click()
-  await page.waitFor(() => page.container.querySelector('#batch-bar').hidden === true, 'batch cancelled', 6000)
+  await page.waitFor(() => page.container.querySelector('#btn-continue-batch').hidden === false, 'paused bar visible', 6000)
+  assert.equal(page.container.querySelector('#btn-cancel-batch').hidden, true, 'cancel button hidden while paused')
   const analyzeCalls = page.calls.filter(entry => entry.kind === 'analyze')
   assert.equal(analyzeCalls.length, 1, 'only the first segment started')
   assert.ok(page.container.querySelector('#history-list').textContent.includes('取消'), 'cancelled row is visible')
+  page.button('继续', page.container).click()
+  await page.waitFor(() => page.container.querySelector('#batch-bar').hidden === true, 'batch finished after resume', 10000)
+  assert.ok(page.calls.filter(entry => entry.kind === 'analyze').length >= 2, 'resumed segments ran')
+  await page.waitFor(() => page.detailText().includes('已完成整篇分段审阅'), 'summary after resume')
   page.dom.window.close()
 })
 
@@ -642,6 +650,88 @@ await test('dragging the side resizer sets and persists the column width', async
   assert.equal(page.window.document.documentElement.style.getPropertyValue('--rd-side-width'), '380px')
   const stored = JSON.parse(page.window.localStorage.getItem(SETTINGS_KEY))
   assert.equal(stored.sideWidth, 380)
+  page.dom.window.close()
+})
+
+await test('settings and export popovers open and close', async () => {
+  const page = await mount()
+  await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
+  const settings = page.container.querySelector('#settings-panel')
+  const exportMenu = page.container.querySelector('#export-menu')
+  page.container.querySelector('#btn-settings-menu').click()
+  assert.equal(settings.hidden, false, 'settings open')
+  assert.equal(exportMenu.hidden, true)
+  page.container.querySelector('#btn-export-menu').click()
+  assert.equal(settings.hidden, true, 'settings closed when export opens')
+  assert.equal(exportMenu.hidden, false, 'export open')
+  page.window.dispatchEvent(new page.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await flush(2)
+  assert.equal(exportMenu.hidden, true, 'escape closes popovers')
+  page.container.querySelector('#btn-settings-menu').click()
+  page.container.body.click()
+  await flush(2)
+  assert.equal(settings.hidden, true, 'outside click closes popovers')
+  page.dom.window.close()
+})
+
+await test('imports a review package from a JSON file', async () => {
+  const page = await mount()
+  await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
+  const pkg = {
+    format: 'dsh.review-desk.package',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    app: { plugin: 'review-desk', build: 'test' },
+    document: { title: '导入测试', text: BASE_TEXT },
+    runs: [{
+      id: 'run-1', action: 'logic', instruction: '', status: 'done',
+      text: '### 导入来的结果\n结构清晰。', meta: { provider: 'deepseek', model: 'deepseek-flash' },
+      sources: [], claims: [], selection: { start: 0, end: 12, text: BASE_TEXT.slice(0, 12) },
+      replaced: null, startedAt: Date.now(), finishedAt: Date.now(), warning: '', error: '',
+    }],
+    session: { instruction: '' },
+  }
+  const file = {
+    name: 'test.review-desk.json',
+    size: JSON.stringify(pkg).length,
+    text: () => Promise.resolve(JSON.stringify(pkg)),
+  }
+  const input = page.container.querySelector('#package-file')
+  Object.defineProperty(input, 'files', { value: [file], configurable: true })
+  input.dispatchEvent(new page.window.Event('change'))
+  await page.waitFor(() => page.container.querySelector('#history-list').textContent.includes('已从审核包导入'), 'import summary row', 6000)
+  assert.ok(page.detailText().includes('已从审核包导入 1 条结果'))
+  assert.equal(page.itemRows().length, 2, 'imported run + summary')
+  page.dom.window.close()
+})
+
+await test('exports only the currently selected result', async () => {
+  const page = await mount()
+  await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
+  page.actionButton('expand').click()
+  await page.waitFor(() => page.detailState().textContent === '完成', 'expand done')
+  page.button('导出当前结果 (.md)', page.container).click()
+  await page.waitFor(() => page.calls.some(entry => entry.kind === 'export'), 'result export')
+  const call = page.calls.find(entry => entry.kind === 'export')
+  assert.match(call.payload.filename, /选中结果-.*\.md$/u)
+  assert.ok(call.payload.content.includes('# 审稿结果'))
+  assert.ok(call.payload.content.includes('扩写后的正文示例'))
+  page.dom.window.close()
+})
+
+await test('segment length setting is configurable', async () => {
+  const page = await mount()
+  await page.waitFor(() => page.container.querySelector('#setting-model option'), 'panel ready')
+  const settings = page.container.querySelector('#settings-panel')
+  page.container.querySelector('#btn-settings-menu').click()
+  assert.equal(settings.hidden, false)
+  const select = page.container.querySelector('#setting-segment-length')
+  assert.deepEqual([...select.options].map(option => option.value), ['600', '900', '1200', '1600'])
+  select.value = '600'
+  select.dispatchEvent(new page.window.Event('change'))
+  await flush(2)
+  const stored = JSON.parse(page.window.localStorage.getItem(SETTINGS_KEY))
+  assert.equal(stored.segmentLength, 600)
   page.dom.window.close()
 })
 

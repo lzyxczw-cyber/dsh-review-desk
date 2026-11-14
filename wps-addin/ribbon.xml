@@ -1,7 +1,7 @@
 <customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnAddinLoad">
   <ribbon startFromScratch="false">
     <tabs>
-      <tab id="reviewDeskTab" label="文稿审核">
+      <tab id="reviewDeskTab" label="审悦">
         <group id="reviewDeskGroup" label="审稿">
           <button id="btnOpenPane" label="打开审稿台" onAction="OnAction" visible="true" size="large" getEnabled="OnGetEnabled" />
         </group>

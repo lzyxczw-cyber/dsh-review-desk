@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Review Desk · WPS</title>
+  <title>审悦 · WPS</title>
   <link rel="stylesheet" href="./taskpane.css" />
 </head>
 <body>
@@ -12,29 +12,65 @@
       <header class="rd-side-head">
         <div class="rd-title-row">
           <span id="conn-dot" class="rd-dot" title="后端连接状态"></span>
-          <h1>文稿审核台</h1>
+          <h1>审悦</h1>
+          <span class="rd-head-actions">
+            <button id="btn-export-menu" class="rd-icon-btn" type="button" title="导出 / 导入审核包">导出 ▾</button>
+            <button id="btn-settings-menu" class="rd-icon-btn" type="button" title="设置">设置</button>
+          </span>
         </div>
         <p id="doc-name" class="rd-doc-name" title="当前文档"></p>
         <p class="rd-sub">选中文字 → 审核 → 批注 / 修订</p>
-      </header>
 
-      <details class="rd-settings">
-        <summary>模型 / 推理 / 输出设置 <span id="settings-summary" class="rd-settings-summary"></span></summary>
-        <label>模型
-          <select id="setting-model"><option value="">（默认：DSH 设置）</option></select>
-        </label>
-        <label>推理等级
-          <select id="setting-effort"><option value="">（默认）</option></select>
-        </label>
-        <label>输出上限
-          <select id="setting-cap"><option value="0">（默认）</option></select>
-        </label>
-        <label class="rd-check">
-          <input id="setting-segment" type="checkbox" checked />
-          <span>长文自动分段（选中 &gt; 1200 字时分段审阅）</span>
-        </label>
-        <p id="settings-hint" class="rd-hint">默认使用 DSH 的模型与推理设置；上限越高越慢、费用越高。</p>
-      </details>
+        <div id="export-menu" class="rd-popover" hidden>
+          <p class="rd-popover-title">导出 / 审核包</p>
+          <button id="btn-export-package" type="button">导出审核包 (.json)</button>
+          <button id="btn-export-report" type="button">导出审稿报告 (.md)</button>
+          <button id="btn-export-current" type="button">导出当前结果 (.md)</button>
+          <button id="btn-copy-package" type="button">复制审核包</button>
+          <button id="btn-import-package" type="button">导入审核包…</button>
+          <p id="export-hint" class="rd-hint">导出文件由本机桥写入 DSH 导出目录。</p>
+          <input id="package-file" type="file" accept=".json,application/json" hidden />
+        </div>
+
+        <div id="settings-panel" class="rd-popover" hidden>
+          <p class="rd-popover-title">设置</p>
+          <label>模型
+            <select id="setting-model"><option value="">（默认：DSH 设置）</option></select>
+          </label>
+          <label>推理等级
+            <select id="setting-effort"><option value="">（默认）</option></select>
+          </label>
+          <label>输出上限
+            <select id="setting-cap"><option value="0">（默认）</option></select>
+          </label>
+          <label>分段长度
+            <select id="setting-segment-length">
+              <option value="600">600 字 / 段</option>
+              <option value="900">900 字 / 段</option>
+              <option value="1200">1200 字 / 段</option>
+              <option value="1600">1600 字 / 段</option>
+            </select>
+          </label>
+          <label class="rd-check">
+            <input id="setting-segment" type="checkbox" checked />
+            <span>长文自动分段（选中 &gt; 1200 字）</span>
+          </label>
+          <p id="settings-hint" class="rd-hint">默认使用 DSH 的模型与推理设置；上限越高越慢、费用越高。</p>
+          <hr class="rd-sep" />
+          <p class="rd-popover-subtitle">连接</p>
+          <label>桥地址
+            <input id="bridge-url" type="text" spellcheck="false" />
+          </label>
+          <label>访问令牌（可选）
+            <input id="bridge-token" type="password" spellcheck="false" placeholder="自动配对成功后可留空" />
+          </label>
+          <div class="rd-bridge-row">
+            <button id="btn-check" type="button" class="rd-mini">检测连接</button>
+            <button id="btn-reset-side" type="button" class="rd-mini">左栏宽度复位</button>
+          </div>
+          <p id="bridge-hint" class="rd-hint">默认连接本机 DSH 的文稿审核桥（127.0.0.1:47831）。</p>
+        </div>
+      </header>
 
       <section class="rd-select-card">
         <div class="rd-row">
@@ -77,37 +113,19 @@
       <div id="history-list" class="rd-history-list"></div>
 
       <footer class="rd-side-foot">
-        <details class="rd-export">
-          <summary>导出 / 审核包</summary>
-          <div class="rd-export-actions">
-            <button id="btn-export-package" type="button">导出审核包 (.json)</button>
-            <button id="btn-export-report" type="button">导出审稿报告 (.md)</button>
-            <button id="btn-copy-package" type="button">复制审核包</button>
-          </div>
-          <p id="export-hint" class="rd-hint">导出文件由本机桥写入 DSH 指定的目录。</p>
-        </details>
-        <details>
-          <summary>连接设置</summary>
-          <label>桥地址
-            <input id="bridge-url" type="text" spellcheck="false" />
-          </label>
-          <label>访问令牌（可选）
-            <input id="bridge-token" type="password" spellcheck="false" placeholder="REVIEW_DESK_WPS_TOKEN" />
-          </label>
-          <div class="rd-bridge-row">
-            <button id="btn-check" type="button" class="rd-mini">检测连接</button>
-          </div>
-          <p id="bridge-hint" class="rd-hint">默认连接本机 DSH 的文稿审核桥（127.0.0.1:47831）。</p>
-        </details>
+        <p class="rd-hint">结果保存在本机；替换以 WPS「修订」写入，可接受 / 拒绝或 ⌘Z 撤销。</p>
       </footer>
     </aside>
+
     <div id="side-resizer" class="rd-resizer" role="separator" aria-orientation="vertical" title="拖动调整左栏宽度（双击复位）"></div>
 
     <main class="rd-main">
       <div id="batch-bar" class="rd-batch" hidden>
         <div class="rd-batch-text"></div>
         <div class="rd-batch-progress"><div class="rd-batch-fill"></div></div>
+        <button id="btn-continue-batch" type="button" hidden>继续</button>
         <button id="btn-cancel-batch" type="button">取消</button>
+        <button id="btn-dismiss-batch" type="button" hidden>关闭</button>
       </div>
       <div id="detail-empty" class="rd-empty">
         <p>从左侧选择一条结果，或选中文字开始一次审核。</p>

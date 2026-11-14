@@ -10,7 +10,7 @@
   var DEFAULT_BRIDGE = 'http://127.0.0.1:47831'
   var BRIDGE_KEY = 'wps-review-desk.bridge'
   var SETTINGS_KEY = 'wps-review-desk.settings.v2'
-  var HISTORY_KEY = 'wps-review-desk.history.v3'
+  var HISTORY_KEY = 'wps-review-desk.history.v4'
   var HISTORY_LIMIT = 100
   var HISTORY_BYTES = 900000
   var VERIFY = /[?&]verify=1(?:&|$)/.test(window.location.search)
@@ -36,6 +36,7 @@
   var PACKAGE_VERSION = 1
   var PACKAGE_LIMIT = 8 * 1024 * 1024
   var SEGMENT_CHARS = 900
+  var SEGMENT_CHARS_OPTIONS = [600, 900, 1200, 1600]
   var SEGMENT_AUTO_THRESHOLD = 1200
   var SEGMENT_SELECTION_LIMIT = 12
   var SEGMENT_DOCUMENT_LIMIT = 40
@@ -46,7 +47,7 @@
 
   var state = {
     bridge: DEFAULT_BRIDGE,
-    settings: { provider: '', model: '', reasoningEffort: '', maxTokens: 0, token: '', autoSegment: true, sideWidth: SIDE_WIDTH_DEFAULT },
+    settings: { provider: '', model: '', reasoningEffort: '', maxTokens: 0, token: '', autoSegment: true, segmentLength: SEGMENT_CHARS, sideWidth: SIDE_WIDTH_DEFAULT },
     catalog: null,
     docName: '',
     selection: null,
@@ -63,6 +64,7 @@
     historyTimer: 0,
     toastTimer: 0,
     batch: null,
+    pausedBatch: null,
     pairing: null,
   }
 
@@ -128,6 +130,7 @@
           if (Number.isFinite(Number(parsed.maxTokens)) && Number(parsed.maxTokens) > 0) settings.maxTokens = Number(parsed.maxTokens)
           if (typeof parsed.token === 'string') settings.token = parsed.token
           if (parsed.autoSegment === false) settings.autoSegment = false
+          if (SEGMENT_CHARS_OPTIONS.indexOf(Number(parsed.segmentLength)) >= 0) settings.segmentLength = Number(parsed.segmentLength)
           if (Number.isFinite(Number(parsed.sideWidth))) {
             settings.sideWidth = Math.min(SIDE_WIDTH_MAX, Math.max(SIDE_WIDTH_MIN, Math.round(Number(parsed.sideWidth))))
           }
@@ -284,15 +287,30 @@
     var controller = new AbortController()
     var timer = setTimeout(function () { controller.abort() }, 3000)
     fetch(`${state.bridge}/health`, { signal: controller.signal })
-      .then(function (response) { return response.json() })
+      .then(function (response) {
+        if (!response.ok) {
+          var failure = new Error(`HTTP ${response.status}`)
+          failure.status = response.status
+          throw failure
+        }
+        return response.json()
+      })
       .then(function (info) {
         clearTimeout(timer)
         if (info && info.ok === true) acceptHealth(info)
         else setHealth('down')
       })
-      .catch(function () {
+      .catch(function (error) {
         clearTimeout(timer)
         setHealth('down')
+        report({
+          kind: 'wps-health',
+          ok: false,
+          bridge: state.bridge,
+          origin: String(window.location.origin || ''),
+          error: String((error && error.message) || error),
+          status: error && error.status ? error.status : 0,
+        })
       })
   }
 
@@ -1524,7 +1542,9 @@
       text = selection.text
       baseStart = selection.start
     }
-    var maxChars = Number(options.maxChars) > 0 ? Math.max(200, Math.round(Number(options.maxChars))) : SEGMENT_CHARS
+    var maxChars = Number(options.maxChars) > 0
+      ? Math.max(200, Math.round(Number(options.maxChars)))
+      : (Number(state.settings.segmentLength) || SEGMENT_CHARS)
     var segments = splitSegments(text, baseStart, maxChars)
     if (segments.length === 0) { toast('没有可审阅的正文'); return null }
     var limit = mode === 'document' ? SEGMENT_DOCUMENT_LIMIT : SEGMENT_SELECTION_LIMIT
@@ -1544,6 +1564,7 @@
       mode: mode,
       modeLabel: modeLabel,
       total: segments.length,
+      segments: segments,
       done: 0,
       results: [],
       resultInfos: [],
@@ -1594,11 +1615,26 @@
     if (!batch || state.batch !== batch) return
     state.batch = null
     setRunning(false)
-    renderBatchBar()
     var summary = null
     if (!batch.cancelled && batch.done >= batch.total && batch.done > 0) {
       summary = createBatchSummary(batch)
     }
+    if (batch.cancelled && batch.done < batch.total) {
+      // Keep the remaining segments so the run can be resumed.
+      state.pausedBatch = {
+        id: batch.id,
+        action: batch.action,
+        mode: batch.mode,
+        modeLabel: batch.modeLabel,
+        total: batch.total,
+        done: batch.done,
+        segments: batch.segments,
+        resultInfos: batch.resultInfos,
+      }
+    } else {
+      state.pausedBatch = null
+    }
+    renderBatchBar()
     if (batch.options && typeof batch.options.onComplete === 'function') {
       batch.options.onComplete({
         cancelled: batch.cancelled,
@@ -1610,6 +1646,38 @@
     }
     report({ kind: 'wps-batch-done', cancelled: batch.cancelled, done: batch.done, total: batch.total })
     saveHistory()
+  }
+
+  /** Resume a cancelled batch from its next unfinished segment. */
+  function continueBatch() {
+    var paused = state.pausedBatch
+    if (!paused || state.batch) return
+    var batch = {
+      id: paused.id,
+      action: paused.action,
+      mode: paused.mode,
+      modeLabel: paused.modeLabel,
+      total: paused.total,
+      segments: paused.segments,
+      done: paused.done,
+      results: [],
+      resultInfos: paused.resultInfos.slice(),
+      cancelled: false,
+      controller: null,
+      running: true,
+      options: {},
+    }
+    state.pausedBatch = null
+    state.batch = batch
+    setRunning(true)
+    renderBatchBar()
+    report({ kind: 'wps-batch-resume', action: batch.action, done: batch.done, total: batch.total })
+    runBatchSegment(batch, batch.segments, batch.done)
+  }
+
+  function dismissPausedBatch() {
+    state.pausedBatch = null
+    renderBatchBar()
   }
 
   function cancelBatch() {
@@ -1626,16 +1694,27 @@
   function renderBatchBar() {
     if (!refs.batchBar) return
     var batch = state.batch
-    if (!batch) {
+    var paused = state.pausedBatch
+    if (!batch && !paused) {
       refs.batchBar.hidden = true
       return
     }
     refs.batchBar.hidden = false
+    var live = batch || paused
+    var label = `${live.modeLabel}审阅 · ${ACTION_LABELS[live.action] || live.action}`
     if (refs.batchText) {
-      refs.batchText.textContent = `${batch.modeLabel}审阅 · ${ACTION_LABELS[batch.action] || batch.action} · ${Math.min(batch.done + 1, batch.total)}/${batch.total}`
+      refs.batchText.textContent = batch
+        ? `${label} · ${Math.min(batch.done + 1, batch.total)}/${batch.total}`
+        : `${label} · 已取消 ${paused.done}/${paused.total}`
     }
-    if (refs.batchFill) refs.batchFill.style.width = `${Math.round((batch.done / batch.total) * 100)}%`
-    if (refs.btnCancelBatch) refs.btnCancelBatch.disabled = batch.cancelled === true
+    if (refs.batchFill) refs.batchFill.style.width = `${Math.round((live.done / live.total) * 100)}%`
+    var running = batch !== null
+    if (refs.btnCancelBatch) {
+      refs.btnCancelBatch.hidden = !running
+      refs.btnCancelBatch.disabled = running && batch.cancelled === true
+    }
+    if (refs.btnContinueBatch) refs.btnContinueBatch.hidden = running || paused === null
+    if (refs.btnDismissBatch) refs.btnDismissBatch.hidden = running || paused === null
   }
 
   function createBatchSummary(batch) {
@@ -1714,7 +1793,7 @@
       format: PACKAGE_FORMAT,
       version: PACKAGE_VERSION,
       exportedAt: new Date().toISOString(),
-      app: { plugin: 'review-desk', build: 'wps-addin-0.4' },
+      app: { plugin: 'review-desk', name: '审悦', build: 'wps-addin-0.5.0' },
       document: { title: title, text: documentText },
       runs: state.results.filter(function (result) { return result.status !== 'running' }).map(function (result) {
         return {
@@ -1790,17 +1869,7 @@
     }
   }
 
-  function exportFile(kind) {
-    var doc = getDoc()
-    if (!doc) { toast('没有打开的文档'); return Promise.resolve(null) }
-    var payload
-    if (kind === 'package') {
-      var pkg = JSON.stringify(buildReviewPackage(), null, 2)
-      if (pkg.length > PACKAGE_LIMIT) { toast('审核包过大（上限约 8 MB），请先精简结果'); return Promise.resolve(null) }
-      payload = { filename: `${safeTitle()}-${fileStamp()}.review-desk.json`, content: pkg }
-    } else {
-      payload = { filename: `${safeTitle()}-审稿报告-${fileStamp()}.md`, content: buildReportMarkdown() }
-    }
+  function sendExport(payload, kind, label) {
     setExportBusy(true)
     return fetch(`${state.bridge}/export`, {
       method: 'POST',
@@ -1813,7 +1882,7 @@
       })
     }).then(function (info) {
       if (refs.exportHint) refs.exportHint.textContent = `已写入：${info.path || info.filename || ''}`
-      toast(kind === 'package' ? '审核包已导出' : '审稿报告已导出')
+      toast(`${label}已导出`)
       report({ kind: 'wps-export', ok: true, format: kind, path: info.path || '', bytes: info.bytes || 0 })
       return info
     }).catch(function (error) {
@@ -1826,6 +1895,155 @@
       setExportBusy(false)
       return info
     })
+  }
+
+  function exportFile(kind) {
+    var doc = getDoc()
+    if (!doc) { toast('没有打开的文档'); return Promise.resolve(null) }
+    if (kind === 'package') {
+      var pkg = JSON.stringify(buildReviewPackage(), null, 2)
+      if (pkg.length > PACKAGE_LIMIT) { toast('审核包过大（上限约 8 MB），请先精简结果'); return Promise.resolve(null) }
+      return sendExport({ filename: `${safeTitle()}-${fileStamp()}.review-desk.json`, content: pkg }, 'package', '审核包')
+    }
+    return sendExport({ filename: `${safeTitle()}-审稿报告-${fileStamp()}.md`, content: buildReportMarkdown() }, 'report', '审稿报告')
+  }
+
+  function buildSingleResultMarkdown(result) {
+    var lines = [`# 审稿结果：${safeTitle()}`, '', `- ${ACTION_LABELS[result.action] || result.action} · ${timeLabel(result.createdAt)}`]
+    if (result.instruction) lines.push(`- 要求：${result.instruction}`)
+    if (result.selection) {
+      lines.push(`- 原文（${result.selection.text.length} 字）：${result.selection.text.replace(/\s+/gu, ' ').slice(0, 160)}`)
+    }
+    if (result.meta) lines.push(`- 模型：${[result.meta.provider, result.meta.model].filter(Boolean).join(' / ')}`)
+    if (result.batch) lines.push(`- 批量：第 ${result.batch.index}/${result.batch.total} 段`)
+    lines.push('', result.status === 'error' ? `> ${result.error}` : result.text)
+    if (result.sources && result.sources.length > 0) {
+      lines.push('', '来源：')
+      result.sources.forEach(function (source, index) {
+        lines.push(`- [S${index + 1}] ${source.title || source.url || ''}${source.url ? ` — ${source.url}` : ''}`)
+      })
+    }
+    return lines.join('\n')
+  }
+
+  function exportCurrentResult() {
+    var result = selectedResult()
+    if (!result) { toast('先在左侧选择一条结果'); return Promise.resolve(null) }
+    if (result.status === 'running') { toast('结果还没生成完'); return Promise.resolve(null) }
+    return sendExport({
+      filename: `${safeTitle()}-选中结果-${fileStamp()}.md`,
+      content: buildSingleResultMarkdown(result),
+    }, 'result', '当前结果')
+  }
+
+  /* ------------------------------------------------------------------ *
+   * 审核包导入
+   * ------------------------------------------------------------------ */
+
+  function importPackageText(text) {
+    var parsed
+    try { parsed = JSON.parse(text) } catch (error) { toast('不是有效的 JSON 文件'); return null }
+    if (parsed === null || typeof parsed !== 'object' || parsed.format !== PACKAGE_FORMAT) {
+      toast('不是有效的审核包（缺少 format）')
+      return null
+    }
+    if (typeof parsed.version !== 'number' || parsed.version > PACKAGE_VERSION) {
+      toast('审核包版本过新，无法导入')
+      return null
+    }
+    var document = parsed.document
+    if (document === null || typeof document !== 'object' || typeof document.text !== 'string') {
+      toast('审核包缺少文档内容')
+      return null
+    }
+    var runs = Array.isArray(parsed.runs) ? parsed.runs : []
+    if (runs.length === 0) { toast('审核包里没有结果'); return null }
+    var currentText = ''
+    try { currentText = String(getDoc() ? getDoc().Content.Text || '' : '') } catch (error) { currentText = '' }
+    var sameDocument = currentText.trim() !== '' && currentText.trim() === String(document.text || '').trim()
+    var imported = 0
+    runs.slice(0, 60).forEach(function (run) {
+      if (run === null || typeof run !== 'object') return
+      var action = ACTION_LABELS[run.action] ? run.action : 'custom'
+      var selection = run.selection && typeof run.selection === 'object'
+        ? { start: Number(run.selection.start) || 0, end: Number(run.selection.end) || 0, text: String(run.selection.text || '') }
+        : null
+      state.results.push({
+        id: ++state.seq,
+        action: action,
+        instruction: typeof run.instruction === 'string' ? run.instruction : '',
+        createdAt: Number(run.startedAt) || Date.now(),
+        status: run.status === 'error' ? 'error' : run.status === 'cancelled' ? 'cancelled' : 'done',
+        text: typeof run.text === 'string' ? run.text : '',
+        stage: '',
+        meta: run.meta && typeof run.meta === 'object' ? run.meta : null,
+        sources: Array.isArray(run.sources) ? run.sources : [],
+        note: '',
+        warning: typeof run.warning === 'string' ? run.warning : '',
+        error: typeof run.error === 'string' ? run.error : '',
+        errorKind: '',
+        selection: selection,
+        parentId: null,
+        original: '',
+        maxTokens: 0,
+        applied: null,
+        batch: run.batch && typeof run.batch === 'object' ? run.batch : null,
+        batchSummary: run.batchSummary === true,
+        imported: true,
+      })
+      imported += 1
+    })
+    var title = typeof document.title === 'string' ? document.title : ''
+    var summaryText = [
+      `已从审核包导入 ${imported} 条结果。`,
+      '',
+      `- 来源文档：${title || '（未命名）'}`,
+      `- 与当前文档内容${sameDocument ? '一致，定位/批注可用' : '不一致，定位/批注可能偏移'}`,
+    ].join('\n')
+    state.results.unshift({
+      id: ++state.seq,
+      action: 'custom',
+      instruction: `导入审核包（${imported} 条）`,
+      createdAt: Date.now(),
+      status: 'done',
+      text: summaryText,
+      stage: '',
+      meta: null,
+      sources: [],
+      note: '',
+      warning: '',
+      error: '',
+      errorKind: '',
+      selection: null,
+      parentId: null,
+      original: '',
+      maxTokens: 0,
+      applied: null,
+      batch: null,
+      batchSummary: false,
+      imported: true,
+      importSummary: true,
+    })
+    state.selectedId = state.results[0].id
+    renderHistory()
+    renderDetail(true)
+    saveHistory()
+    toast(`已导入 ${imported} 条结果`)
+    report({ kind: 'wps-import', ok: true, runs: imported, sameDocument: sameDocument })
+    return imported
+  }
+
+  function pickPackageFile() {
+    if (refs.packageFile) refs.packageFile.click()
+  }
+
+  function onPackageFile(event) {
+    var file = event && event.target && event.target.files ? event.target.files[0] : null
+    if (!file) return
+    try { event.target.value = '' } catch (error) { /* ignore */ }
+    if (file.size > PACKAGE_LIMIT) { toast('审核包过大（上限约 8 MB）'); return }
+    var read = typeof file.text === 'function' ? file.text() : Promise.resolve('')
+    read.then(function (text) { importPackageText(text) }).catch(function () { toast('读取审核包失败') })
   }
 
   function copyPackage() {
@@ -1979,6 +2197,10 @@
       return
     }
     if (event.key === 'Escape') {
+      if ((refs.exportMenu && !refs.exportMenu.hidden) || (refs.settingsPanel && !refs.settingsPanel.hidden)) {
+        closePopovers()
+        return
+      }
       var active = document.activeElement
       if (active && (active.tagName === 'INPUT' || active.tagName === 'SELECT' || active.tagName === 'TEXTAREA')) {
         active.blur()
@@ -2139,6 +2361,21 @@
                 reportPath: reportInfo ? reportInfo.path : '',
                 sideWidth: state.settings.sideWidth,
               })
+              setTimeout(function () {
+                var imported = importPackageText(JSON.stringify(buildReviewPackage()))
+                report({ kind: 'wps-selftest', stage: 'import', imported: imported, history: state.results.length })
+                var target = selectedResult()
+                if (target) {
+                  exportCurrentResult().then(function (info) {
+                    report({
+                      kind: 'wps-selftest',
+                      stage: 'export-current',
+                      path: info ? info.path : '',
+                      resultId: target.id,
+                    })
+                  })
+                }
+              }, 500)
             })
           })
         }, 300)
@@ -2161,6 +2398,40 @@
   /* ------------------------------------------------------------------ *
    * 初始化
    * ------------------------------------------------------------------ */
+
+  function renderSegmentLengthOptions() {
+    if (!refs.settingSegmentLength) return
+    refs.settingSegmentLength.innerHTML = ''
+    SEGMENT_CHARS_OPTIONS.forEach(function (value) {
+      var option = document.createElement('option')
+      option.value = String(value)
+      option.textContent = `${value} 字 / 段`
+      refs.settingSegmentLength.appendChild(option)
+    })
+    refs.settingSegmentLength.value = String(state.settings.segmentLength || SEGMENT_CHARS)
+  }
+
+  function closePopovers() {
+    if (refs.exportMenu) refs.exportMenu.hidden = true
+    if (refs.settingsPanel) refs.settingsPanel.hidden = true
+  }
+
+  function togglePopover(kind) {
+    var target = kind === 'export' ? refs.exportMenu : refs.settingsPanel
+    var other = kind === 'export' ? refs.settingsPanel : refs.exportMenu
+    if (other) other.hidden = true
+    if (target) target.hidden = !target.hidden
+    if (target && kind === 'settings' && target.hidden === false) renderSegmentLengthOptions()
+  }
+
+  function onDocumentClick(event) {
+    var target = event.target
+    if (refs.exportMenu && refs.exportMenu.contains(target)) return
+    if (refs.settingsPanel && refs.settingsPanel.contains(target)) return
+    if (refs.btnExportMenu && refs.btnExportMenu.contains(target)) return
+    if (refs.btnSettingsMenu && refs.btnSettingsMenu.contains(target)) return
+    closePopovers()
+  }
 
   function init() {
     refs = {
@@ -2199,6 +2470,17 @@
       btnCopyPackage: document.getElementById('btn-copy-package'),
       exportHint: document.getElementById('export-hint'),
       sideResizer: document.getElementById('side-resizer'),
+      btnExportMenu: document.getElementById('btn-export-menu'),
+      btnSettingsMenu: document.getElementById('btn-settings-menu'),
+      exportMenu: document.getElementById('export-menu'),
+      settingsPanel: document.getElementById('settings-panel'),
+      btnExportCurrent: document.getElementById('btn-export-current'),
+      btnImportPackage: document.getElementById('btn-import-package'),
+      packageFile: document.getElementById('package-file'),
+      settingSegmentLength: document.getElementById('setting-segment-length'),
+      btnResetSide: document.getElementById('btn-reset-side'),
+      btnContinueBatch: document.getElementById('btn-continue-batch'),
+      btnDismissBatch: document.getElementById('btn-dismiss-batch'),
       actionButtons: Array.prototype.slice.call(document.querySelectorAll('.rd-action')),
     }
 
@@ -2212,6 +2494,7 @@
     if (refs.bridgeToken) refs.bridgeToken.value = state.settings.token
     applySideWidth(state.settings.sideWidth)
     renderCapOptions()
+    renderSegmentLengthOptions()
     if (refs.settingSegment) refs.settingSegment.checked = state.settings.autoSegment !== false
 
     if (refs.settingModel) {
@@ -2244,6 +2527,12 @@
     if (refs.settingSegment) {
       refs.settingSegment.addEventListener('change', function () {
         state.settings.autoSegment = refs.settingSegment.checked === true
+        persistSettings()
+      })
+    }
+    if (refs.settingSegmentLength) {
+      refs.settingSegmentLength.addEventListener('change', function () {
+        state.settings.segmentLength = Number(refs.settingSegmentLength.value) || SEGMENT_CHARS
         persistSettings()
       })
     }
@@ -2303,9 +2592,28 @@
       })
     }
     if (refs.btnCancelBatch) refs.btnCancelBatch.addEventListener('click', cancelBatch)
+    if (refs.btnContinueBatch) refs.btnContinueBatch.addEventListener('click', continueBatch)
+    if (refs.btnDismissBatch) refs.btnDismissBatch.addEventListener('click', dismissPausedBatch)
     if (refs.btnExportPackage) refs.btnExportPackage.addEventListener('click', function () { exportFile('package') })
     if (refs.btnExportReport) refs.btnExportReport.addEventListener('click', function () { exportFile('report') })
+    if (refs.btnExportCurrent) refs.btnExportCurrent.addEventListener('click', exportCurrentResult)
     if (refs.btnCopyPackage) refs.btnCopyPackage.addEventListener('click', copyPackage)
+    if (refs.btnImportPackage) refs.btnImportPackage.addEventListener('click', pickPackageFile)
+    if (refs.packageFile) refs.packageFile.addEventListener('change', onPackageFile)
+    if (refs.btnExportMenu) refs.btnExportMenu.addEventListener('click', function (event) {
+      event.stopPropagation()
+      togglePopover('export')
+    })
+    if (refs.btnSettingsMenu) refs.btnSettingsMenu.addEventListener('click', function (event) {
+      event.stopPropagation()
+      togglePopover('settings')
+    })
+    if (refs.btnResetSide) refs.btnResetSide.addEventListener('click', function () {
+      applySideWidth(SIDE_WIDTH_DEFAULT)
+      persistSettings()
+      toast('左栏宽度已复位')
+    })
+    document.addEventListener('click', onDocumentClick)
     initResizer()
     window.addEventListener('keydown', onKeydown)
 
@@ -2326,13 +2634,14 @@
 
     report({
       kind: 'wps-taskpane',
-      version: '0.4',
+      version: '0.5',
       loaded: true,
       hasApp: !!getApp(),
       docName: state.docName,
       bridge: state.bridge,
       historyRestored: state.results.length,
       layout: layoutInfo(),
+      location: String(window.location.href),
       at: new Date().toISOString(),
     })
   }

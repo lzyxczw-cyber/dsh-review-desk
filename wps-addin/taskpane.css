@@ -419,6 +419,72 @@ select { color: var(--rd-fg); background: var(--rd-bg); }
   .rd-detail { min-height: 0; }
 }
 
+/* ---- v0.5: header actions, popovers, segment settings ---- */
+.rd-side { position: relative; }
+.rd-head-actions { margin-left: auto; display: flex; gap: 4px; flex: none; }
+.rd-icon-btn {
+  border: 1px solid var(--rd-border);
+  border-radius: 7px;
+  background: var(--rd-bg);
+  padding: 1px 7px;
+  font-size: 11px;
+  color: var(--rd-fg-2);
+  white-space: nowrap;
+}
+.rd-icon-btn:hover { background: var(--rd-bg-soft); color: var(--rd-fg); }
+.rd-popover {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 272px;
+  max-width: calc(100% - 16px);
+  z-index: 50;
+  background: var(--rd-bg);
+  border: 1px solid var(--rd-border);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+  padding: 9px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: calc(100% - 16px);
+  overflow-y: auto;
+}
+.rd-popover[hidden] { display: none !important; }
+.rd-popover-title { margin: 0 0 2px; font-size: 12px; font-weight: 600; }
+.rd-popover-subtitle { margin: 2px 0 0; font-size: 10.5px; font-weight: 600; color: var(--rd-fg-2); }
+.rd-popover label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10.5px;
+  color: var(--rd-fg-2);
+}
+.rd-popover select,
+.rd-popover input[type="text"],
+.rd-popover input[type="password"] {
+  width: 100%;
+  border: 1px solid var(--rd-border);
+  border-radius: 7px;
+  background: var(--rd-bg);
+  color: var(--rd-fg);
+  padding: 5px 7px;
+  font-size: 11.5px;
+}
+.rd-popover > button:not(.rd-mini) {
+  border: 1px solid var(--rd-border);
+  border-radius: 7px;
+  background: var(--rd-bg);
+  padding: 5px 8px;
+  font-size: 11.5px;
+  text-align: left;
+  color: var(--rd-fg);
+}
+.rd-popover > button:not(.rd-mini):hover { background: var(--rd-bg-soft); }
+.rd-sep { border: 0; border-top: 1px solid var(--rd-border); margin: 2px 0; }
+.rd-batch button[hidden] { display: none !important; }
+.rd-side-foot .rd-hint { margin: 0; }
+
 /* ---- v0.4: resizer / batch / export ---- */
 .rd-resizer {
   flex: none;

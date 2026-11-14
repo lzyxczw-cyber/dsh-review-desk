@@ -1,4 +1,4 @@
-# 文稿审核台 · Review Desk
+# 审悦 · Review Desk
 
 > A three-column manuscript review workspace for [DeepSeek Harness](https://github.com/deepseek-ai)（DSH）：
 > 左边读稿，中间做审核，右边留下全部过程。
@@ -42,7 +42,7 @@ git clone https://github.com/lzyxczw-cyber/dsh-review-desk.git
 - **界面**：DSH → 侧栏「插件」→ 添加插件 → 选择本地目录 → 指向 clone 下来的目录；
 - **Agent 工具**：让 DSH 里的 agent 调用 `plugin_manager` 的 `install_bundle`，`target` 填该目录的绝对路径。
 
-安装后重启或刷新页面，左侧栏出现「文稿审核台」。
+安装后重启或刷新页面，左侧栏出现「审悦」。
 
 ### 2. 市场索引（Discover）
 
@@ -50,11 +50,21 @@ git clone https://github.com/lzyxczw-cyber/dsh-review-desk.git
 
 1. **Add index source** 填入
    `https://raw.githubusercontent.com/lzyxczw-cyber/dsh-review-desk/main/market/index.json`；
-2. 在列表里找到「Review desk / 文稿审核台」，**Install**。
+2. 在列表里找到「ShenYue / 审悦」，**Install**。
 
 索引的维护方式见 [`market/README.md`](market/README.md)；改了代码后跑一次 `node scripts/market-index.mjs` 并提交 `market/index.json` 即可发布新版本。
 
-### 3. 依赖
+### 3. 安装 WPS 版（WPS 文字加载项）
+
+装好 DSH 版后，可以把「审悦」同时装进 WPS 文字（面板通过本机回环桥工作，DSH 需要保持运行）：
+
+- **DSH 面板**：顶栏「WPS 版 → 安装 WPS 加载项」；
+- **命令行**：在插件目录运行 `node scripts/install-wps-addin.mjs install`（或 `pnpm wps:install`），`status` / `uninstall` 同理；
+- **Agent**：让 DSH 里的 agent 调用 `install_wps_addin` 工具（`install` / `status` / `uninstall`）。
+
+安装会登记 WPS 的 `publish.xml`，页面由 DSH 桥的 `http://127.0.0.1:47831/addin/` 提供。完全退出 WPS 再打开，在「审悦」功能区打开审稿台；首次加载在 WPS 里点「允许」。卸载用同一个命令的 `uninstall`。细节见 [docs/WPS.md](docs/WPS.md)。
+
+### 4. 依赖
 
 - DSH 已配置至少一个模型通道（审核请求走 profile 的默认模型或面板里选的模型）；
 - 「来源查证」需要 profile 里配置了 web search provider（没有时会明确提示，其余功能不受影响）；
@@ -86,7 +96,7 @@ git checkout wps      # 试用 WPS 加载项（Host 会启动 127.0.0.1:47831 �
 
 ## 使用
 
-1. 打开「文稿审核台」，在左栏粘贴文字，或「导入 → 导入文稿」选择 `.docx` / `.pdf` / `.md` / `.txt`；
+1. 打开「审悦」，在左栏粘贴文字，或「导入 → 导入文稿」选择 `.docx` / `.pdf` / `.md` / `.txt`；
 2. 在中栏拖动选中一段文字（预览模式下也能选），点四项分析之一，或写下要求后点「执行要求」；
 3. 结果出现在右栏：最新一条自动展开，可复制、替换原文、撤销替换、追加修改、定位回原文；点左栏的划线也能反向跳到并高亮对应结果；
 4. 「导出 → 导出审核包」生成 `.review-desk.json`，换电脑「导入 → 导入审核包」继续。
@@ -95,7 +105,7 @@ git checkout wps      # 试用 WPS 加载项（Host 会启动 127.0.0.1:47831 �
 
 1. 旧机器：**导出 → 导出审核包**，得到 `<标题>-<日期>.review-desk.json`（文稿、全部结果、当前要求都在里面）；
 2. 新机器：`git clone https://github.com/lzyxczw-cyber/dsh-review-desk.git`，然后「插件 → 添加插件 → 本地目录」指向 clone 出来的目录（市场索引方式见上）；
-3. 打开文稿审核台：**导入 → 导入审核包**，选中那个 JSON，确认替换即可接着做；
+3. 打开审悦：**导入 → 导入审核包**，选中那个 JSON，确认替换即可接着做；
 4. 需要「原件」版式或引擎版视图时，把原始 `.docx` / `.pdf` 一起带过去，用**导入 → 导入文稿**重新导入一次——审核包**不含**原始文件。
 
 列宽、模型选择、当前视图这类偏好属于本机设置，不随包迁移。

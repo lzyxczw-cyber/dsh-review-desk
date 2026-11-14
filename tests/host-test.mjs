@@ -8,6 +8,8 @@ import assert from 'node:assert/strict'
 
 // The WPS bridge is covered by bridge-test.mjs; keep this suite free of sockets.
 process.env.REVIEW_DESK_WPS_BRIDGE = '0'
+// Keep the add-in installer away from the real WPS directory during tests.
+process.env.REVIEW_DESK_WPS_JSADDONS_DIR = '/tmp/review-desk-wps-addin-test'
 
 const here = path.dirname(new URL(import.meta.url).pathname)
 const mod = await import(path.join(here, '..', 'index.js'))
@@ -108,8 +110,8 @@ assert.ok(analyzeRoute, 'analyze route registered')
 assert.deepEqual(analyzeRoute.methods, ['POST'])
 assert.deepEqual(
   [...registered.routes.keys()].sort(),
-  ['/api/review-desk/analyze', '/api/review-desk/original-pages'],
-  'this plugin owns the analyze and original-page routes',
+  ['/api/review-desk/analyze', '/api/review-desk/original-pages', '/api/review-desk/wps-addin'],
+  'this plugin owns the analyze, original-page and WPS add-in routes',
 )
 assert.ok(registered.tool, 'tool registered')
 assert.equal(registered.tool.name, 'review_manuscript')
@@ -329,6 +331,7 @@ async function analyze(payload) {
 {
   assert.ok(registered.routes.has('/api/review-desk/analyze'))
   assert.ok(registered.routes.has('/api/review-desk/original-pages'))
+  assert.ok(registered.routes.has('/api/review-desk/wps-addin'))
   assert.ok(![...registered.routes.keys()].some(path => path.includes('model')), 'no model routes')
   console.log('ok  routes')
 }
@@ -478,6 +481,36 @@ async function analyze(payload) {
   assert.equal(wrong.response.status, 400)
   assert.match(JSON.parse(wrong.text).error, /custom/)
   console.log('ok  revision')
+}
+
+// 14. the WPS add-in installer route copies files, registers publish.xml and uninstalls
+{
+  const installRoot = process.env.REVIEW_DESK_WPS_JSADDONS_DIR
+  fs.rmSync(installRoot, { recursive: true, force: true })
+  const route = registered.routes.get('/api/review-desk/wps-addin')
+  const call = async (action) => {
+    const response = await route.fetch(new Request('http://127.0.0.1:9/api/review-desk/wps-addin', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action }),
+    }))
+    return response.json()
+  }
+  const installed = await call('install')
+  assert.equal(installed.installed, true)
+  assert.equal(installed.listed, true)
+  assert.match(installed.target, /^http:\/\/127\.0\.0\.1:\d+\/addin\/$/u)
+  assert.match(fs.readFileSync(installed.publishPath, 'utf8'), /wps-review-desk/u)
+  assert.match(fs.readFileSync(installed.publishPath, 'utf8'), /addin\//u)
+  const status = await call('status')
+  assert.equal(status.installed, true)
+  assert.equal(status.version, installed.version)
+  assert.match(status.version, /^\d+\.\d+\.\d+$/u)
+  const removed = await call('uninstall')
+  assert.equal(removed.installed, false)
+  assert.equal(fs.existsSync(installed.publishPath), false)
+  fs.rmSync(installRoot, { recursive: true, force: true })
+  console.log('ok  wps add-in install route')
 }
 
 console.log('\nall host checks passed')

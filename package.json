@@ -1,9 +1,9 @@
 {
   "name": "@local/review-desk",
-  "version": "1.5.0-wps.4",
+  "version": "1.5.0-wps.5",
   "private": true,
   "type": "module",
-  "description": "Manuscript review desk for DeepSeek Harness: a three-column workspace that runs source checks, logic review, expansion, connection analysis, and free-form rewrites on a selected passage, keeps every result, and imports .docx/.pdf with their structure.",
+  "description": "ShenYue (审悦) for DeepSeek Harness: a three-column manuscript review workspace that runs source checks, logic review, expansion, connection analysis, and free-form rewrites on a selected passage, keeps every result, imports .docx/.pdf, and can install its WPS add-in on this machine.",
   "license": "MIT",
   "exports": {
     ".": "./index.js",
@@ -18,10 +18,14 @@
     "locale/*.json",
     "docs",
     "icon.svg",
-    "wps-addin"
+    "wps-addin",
+    "scripts"
   ],
   "scripts": {
-    "test": "cd tests && npm install --no-audit --no-fund && node host-test.mjs && node client-test.mjs"
+    "test": "cd tests && npm install --no-audit --no-fund && node host-test.mjs && node client-test.mjs",
+    "wps:install": "node scripts/install-wps-addin.mjs install",
+    "wps:status": "node scripts/install-wps-addin.mjs status",
+    "wps:uninstall": "node scripts/install-wps-addin.mjs uninstall"
   },
   "keywords": [
     "dsh",
