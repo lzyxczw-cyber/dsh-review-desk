@@ -523,3 +523,10 @@ select { color: var(--rd-fg); background: var(--rd-bg); }
 @media (max-width: 640px) {
   .rd-resizer { display: none; }
 }
+
+/* `display` on the component would otherwise override the hidden attribute */
+.rd-batch[hidden],
+.rd-detail[hidden],
+.rd-empty[hidden] {
+  display: none !important;
+}
