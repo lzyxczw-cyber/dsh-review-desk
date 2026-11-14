@@ -1032,11 +1032,15 @@
     var replace = toolButton('替换原文（修订）', function () { var result = selectedResult(); if (result) replaceOriginal(result) }, { emphasis: 'replace' })
     var undo = toolButton('撤销替换', function () { var result = selectedResult(); if (result) undoReplace(result) })
     var copy = toolButton('复制结果', function () { var result = selectedResult(); if (result) copyResult(result) })
+    var redo = toolButton('重做', function () { var result = selectedResult(); if (result) redoResult(result) })
+    var remove = toolButton('删除', function () { var result = selectedResult(); if (result) deleteResult(result) }, { emphasis: 'danger' })
     tools.appendChild(locate)
     tools.appendChild(comment)
     tools.appendChild(replace)
     tools.appendChild(undo)
     tools.appendChild(copy)
+    tools.appendChild(redo)
+    tools.appendChild(remove)
 
     root.appendChild(head)
     /* 写回操作放在标题（动作/时间/状态）下方，先于正文 */
@@ -1050,7 +1054,7 @@
       parent: parent, text: text, warning: warning, retry: retry, refs: refsList,
       errorBlock: errorBlock, errorText: errorText, errorActions: errorActions,
       revise: revise, reviseInput: reviseInput,
-      tools: { locate: locate, comment: comment, replace: replace, undo: undo, copy: copy },
+      tools: { locate: locate, comment: comment, replace: replace, undo: undo, copy: copy, redo: redo, remove: remove },
     }
   }
 
@@ -1123,6 +1127,8 @@
     dom.tools.undo.style.display = result.applied ? '' : 'none'
     dom.tools.undo.disabled = !result.applied
     dom.tools.copy.disabled = result.status === 'running' && result.text === ''
+    dom.tools.redo.disabled = result.status === 'running' || !result.selection
+    dom.tools.remove.disabled = result.status === 'running'
     if (result.collapsed) { /* no-op: history rows are always compact */ }
   }
 
@@ -1570,6 +1576,40 @@
     })
   }
 
+  /** Re-run a previous result on the same passage with the same instruction. */
+  function redoResult(result) {
+    if (!result) return
+    if (state.running) { toast('上一条审核还在进行，稍后再重做'); return }
+    if (!result.selection) { toast('这条结果没有原文范围，无法重做'); return }
+    var selection = { start: result.selection.start, end: result.selection.end, text: result.selection.text }
+    if (result.action === 'custom') {
+      runAnalysis('custom', {
+        selection: selection,
+        instruction: result.instruction || '',
+        text: selection.text,
+      })
+    } else {
+      runAnalysis(result.action, { selection: selection })
+    }
+    toast('已重新执行这条审核')
+  }
+
+  /** Delete one history result (panel only; the document is untouched). */
+  function deleteResult(result) {
+    if (!result) return
+    if (result.status === 'running') { toast('这条结果还在生成，稍后再删'); return }
+    state.results = state.results.filter(function (item) { return item.id !== result.id })
+    if (state.selectedId === result.id) {
+      state.selectedId = state.results.length > 0 ? state.results[0].id : null
+    }
+    saveHistory()
+    renderHistory()
+    renderDetail(true)
+    applyReviewMarks()
+    toast('已删除该结果')
+    report({ kind: 'wps-delete', ok: true, resultId: result.id })
+  }
+
   function copyResult(result) {
     copyText(result.status === 'error' ? result.error : result.text)
   }
@@ -1927,7 +1967,7 @@
       format: PACKAGE_FORMAT,
       version: PACKAGE_VERSION,
       exportedAt: new Date().toISOString(),
-      app: { plugin: 'review-desk', name: '审悦', build: 'wps-addin-1.1.5' },
+      app: { plugin: 'review-desk', name: '审悦', build: 'wps-addin-1.2.0' },
       document: { title: title, text: documentText },
       runs: state.results.filter(function (result) { return result.status !== 'running' }).map(function (result) {
         return {
@@ -2817,7 +2857,7 @@
 
     report({
       kind: 'wps-taskpane',
-      version: '1.1.5',
+      version: '1.2',
       loaded: true,
       hasApp: !!getApp(),
       docName: state.docName,

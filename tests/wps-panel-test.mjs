@@ -799,6 +799,27 @@ await test('the history header toggles marks on and off', async () => {
   page.dom.window.close()
 })
 
+await test('redo repeats a result and delete removes it', async () => {
+  const page = await mount()
+  await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
+  page.actionButton('logic').click()
+  await page.waitFor(() => page.detailState().textContent === '完成', 'logic done')
+  assert.equal(page.calls.filter(entry => entry.kind === 'analyze').length, 1)
+  assert.equal(page.itemRows().length, 1)
+  const tools = page.container.querySelector('#detail .rd-tools')
+  const labels = [...tools.querySelectorAll('button')].map(button => button.textContent)
+  assert.deepEqual(labels.slice(-2), ['重做', '删除'])
+  page.button('重做', page.container).click()
+  await page.waitFor(() => page.calls.filter(entry => entry.kind === 'analyze').length === 2, 'redo analyzed')
+  const redoCall = page.calls.filter(entry => entry.kind === 'analyze').at(-1)
+  assert.equal(redoCall.payload.action, 'logic')
+  assert.equal(redoCall.payload.text, BASE_TEXT.slice(0, 12))
+  await page.waitFor(() => page.itemRows().length === 2, 'redo row added')
+  page.button('删除', page.container).click()
+  await page.waitFor(() => page.itemRows().length === 1, 'result deleted')
+  page.dom.window.close()
+})
+
 async function test(name, fn) {
   try {
     await fn()

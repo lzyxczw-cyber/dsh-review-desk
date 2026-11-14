@@ -371,6 +371,7 @@ select { color: var(--rd-fg); background: var(--rd-bg); }
   font-size: 12px;
   color: var(--rd-accent);
 }
+.rd-tools button[data-emphasis="danger"] { color: var(--rd-err); }
 .rd-tools {
   display: flex;
   flex-wrap: wrap;
