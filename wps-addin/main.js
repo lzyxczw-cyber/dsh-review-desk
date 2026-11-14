@@ -9,7 +9,7 @@
 
   var REPORT = 'http://127.0.0.1:38999/report'
   var MIN_PANE_WIDTH = 560
-  var PREFERRED_PANE_WIDTH = 560
+  var PREFERRED_PANE_WIDTH = 760
   var state = { paneId: null, ribbonUI: null, autoOpened: false }
 
   function getApp() {
@@ -54,7 +54,7 @@
     try { pane.DockPosition = 2 } catch (error) { /* 2 = dock right */ }
     var widen = function () {
       try {
-        if (Number(pane.Width) < PREFERRED_PANE_WIDTH) pane.Width = PREFERRED_PANE_WIDTH
+        if (Number(pane.Width) < MIN_PANE_WIDTH) pane.Width = PREFERRED_PANE_WIDTH
       } catch (error) { /* width is best-effort */ }
     }
     widen()

@@ -1927,7 +1927,7 @@
       format: PACKAGE_FORMAT,
       version: PACKAGE_VERSION,
       exportedAt: new Date().toISOString(),
-      app: { plugin: 'review-desk', name: '审悦', build: 'wps-addin-1.1.2' },
+      app: { plugin: 'review-desk', name: '审悦', build: 'wps-addin-1.1.3' },
       document: { title: title, text: documentText },
       runs: state.results.filter(function (result) { return result.status !== 'running' }).map(function (result) {
         return {
@@ -2796,7 +2796,7 @@
 
     report({
       kind: 'wps-taskpane',
-      version: '1.1.2',
+      version: '1.1.3',
       loaded: true,
       hasApp: !!getApp(),
       docName: state.docName,

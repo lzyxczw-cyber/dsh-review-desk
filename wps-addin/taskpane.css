@@ -411,20 +411,11 @@ select { color: var(--rd-fg); background: var(--rd-bg); }
 .rd-toast[data-show] { opacity: 1; transform: translateX(-50%) translateY(0); }
 
 /* ---- narrow pane: stack to one column ---- */
-@media (max-width: 520px) {
-  body { overflow: hidden; }
-  .rd-app { flex-direction: column; height: 100vh; min-height: 0; overflow: hidden; }
-  .rd-side {
-    width: 100%;
-    max-width: none;
-    flex: 0 0 auto;
-    height: auto;
-    max-height: 46vh;
-    overflow-y: auto;
-    border-right: 0;
-    border-bottom: 1px solid var(--rd-border);
-  }
-  .rd-main { flex: 1 1 auto; height: auto; min-height: 0; padding-top: 8px; }
+@media (max-width: 640px) {
+  body { overflow: auto; }
+  .rd-app { flex-direction: column; height: auto; min-height: 100vh; }
+  .rd-side { width: 100%; max-width: none; height: auto; border-right: 0; border-bottom: 1px solid var(--rd-border); }
+  .rd-main { height: auto; min-height: 320px; }
   .rd-detail { min-height: 0; }
 }
 
@@ -595,7 +586,7 @@ select { color: var(--rd-fg); background: var(--rd-bg); }
 }
 .rd-export-actions button:hover { background: var(--rd-bg-soft); }
 .rd-item-batch { color: var(--rd-fg-3); font-size: 10px; }
-@media (max-width: 520px) {
+@media (max-width: 640px) {
   .rd-resizer { display: none; }
 }
 
