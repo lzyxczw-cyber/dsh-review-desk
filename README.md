@@ -75,9 +75,9 @@ git clone https://github.com/lzyxczw-cyber/dsh-review-desk.git
 
 | 分支 | 内容 | 状态 |
 | --- | --- | --- |
-| **`main`** | 稳定版：Markdown 文本模型、就地编辑、分色划线、审核包、docx/pdf 导入 | 日常使用，市场索引指向这里 |
+| **`main`** | v1.0 稳定版（含 DSH 面板与 WPS 版安装入口） | 日常使用，市场索引指向这里 |
 | **`engine`** | 实验版：接入 SuperDoc，导入 `.docx` 后用真实 Word 版式展示；替换会先确认，确认后写回 docx，并可导出带修改的 `.docx` | 试用中，未合并（见 `docs/ENGINE.md`） |
-| **`wps`** | 实验版：WPS 文字加载项（任务窗格审稿面板）+ 本机回环桥；在 WPS 里选中文字直接审核，结果以批注 / 修订写回真 `.docx` | 试用中，未合并（见 `wps-addin/README.md`、`docs/WPS.md`） |
+| **`wps`** | v1.0 正式版：DSH 面板 + WPS 文字加载项（任务窗格审稿面板）+ 本机回环桥；在 WPS 里选中文字直接审核，结果以批注 / 修订写回真 `.docx`；支持一键安装 WPS 版 | 已发布 v1.0.0（见 `wps-addin/README.md`、`docs/WPS.md`） |
 
 切换分支后**刷新一次页面**（Host 会热重载，前端需要重新拉取客户端脚本）：
 

@@ -1793,7 +1793,7 @@
       format: PACKAGE_FORMAT,
       version: PACKAGE_VERSION,
       exportedAt: new Date().toISOString(),
-      app: { plugin: 'review-desk', name: '审悦', build: 'wps-addin-0.5.0' },
+      app: { plugin: 'review-desk', name: '审悦', build: 'wps-addin-1.0.0' },
       document: { title: title, text: documentText },
       runs: state.results.filter(function (result) { return result.status !== 'running' }).map(function (result) {
         return {
@@ -2634,7 +2634,7 @@
 
     report({
       kind: 'wps-taskpane',
-      version: '0.5',
+      version: '1.0',
       loaded: true,
       hasApp: !!getApp(),
       docName: state.docName,

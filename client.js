@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({
     /** Id shared by the sidebar entry and the main panel it opens. */
     const PANEL_ID = 'review-desk'
     /** Build tag, surfaced in the page attribute and the console. */
-    const BUILD = '2026-11-14.1'
+    const BUILD = '1.0.0'
     /** Locale namespace owned by this plugin. */
     const NS = 'reviewDesk'
     /** Authenticated route the Host half registered. */
