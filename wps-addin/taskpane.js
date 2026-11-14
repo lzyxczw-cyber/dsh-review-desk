@@ -33,6 +33,9 @@
   ]
   var HIGHLIGHT_COLOR = 7 /* wdYellow */
   var MARKS_KEY = 'wps-review-desk.marks.v2'
+  var MAX_MARKS = 20
+  var MAX_MARK_CHARS = 6000
+  var marksApplying = false
   var MARK_COLORS = {
     source: 0x2563eb,
     logic: 0x7c3aed,
@@ -1291,11 +1294,20 @@
    * so this is safe to call after every result / replace / history change.
    */
   function applyReviewMarks() {
+    if (marksApplying) return { applied: 0, total: 0, skipped: true }
+    marksApplying = true
+    try {
+      return applyReviewMarksInner()
+    } finally {
+      marksApplying = false
+    }
+  }
+
+  function applyReviewMarksInner() {
     var doc = getDoc()
     if (!doc) return { applied: 0, total: 0 }
     restoreMarks(state.marks)
-    var persisted = storedMarks()
-    if (persisted.length > 0) restoreMarks(persisted)
+    if (state.marks.length === 0) restoreMarks(storedMarks())
     state.marks = []
     if (state.settings.showMarks === false) {
       try { localStorage.removeItem(MARKS_KEY) } catch (error) { /* ignore */ }
@@ -1305,9 +1317,11 @@
     var desired = []
     state.results.forEach(function (result) {
       if (result.status !== 'done' || result.batchSummary || !result.selection) return
+      if (desired.length >= MAX_MARKS) return
       var start = Number(result.selection.start)
       var end = Number(result.selection.end)
       if (!isFinite(start) || !isFinite(end) || end <= start) return
+      if (end - start > MAX_MARK_CHARS) return
       var key = `${start}:${end}`
       if (seen[key]) return
       seen[key] = true
@@ -1605,7 +1619,7 @@
     saveHistory()
     renderHistory()
     renderDetail(true)
-    applyReviewMarks()
+    scheduleMarks()
     toast('已删除该结果')
     report({ kind: 'wps-delete', ok: true, resultId: result.id })
   }
@@ -1967,7 +1981,7 @@
       format: PACKAGE_FORMAT,
       version: PACKAGE_VERSION,
       exportedAt: new Date().toISOString(),
-      app: { plugin: 'review-desk', name: '审悦', build: 'wps-addin-1.2.0' },
+      app: { plugin: 'review-desk', name: '审悦', build: 'wps-addin-1.2.1' },
       document: { title: title, text: documentText },
       runs: state.results.filter(function (result) { return result.status !== 'running' }).map(function (result) {
         return {
@@ -2857,7 +2871,7 @@
 
     report({
       kind: 'wps-taskpane',
-      version: '1.2',
+      version: '1.2.1',
       loaded: true,
       hasApp: !!getApp(),
       docName: state.docName,
