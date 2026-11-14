@@ -46,7 +46,7 @@
         "en": "ShenYue"
       },
       "description": {
-        "zh": "三栏审稿工作台：来源查证、逻辑分析、扩写、关联分析与自由改写；编辑区按块渲染表格与图片，点哪段改哪段；导入 docx/pdf 保留结构，审核包可携带全部过程。",
+        "zh": "审悦：三栏审稿工作台 + WPS 文字加载项。来源查证、逻辑分析、扩写、关联分析与自由改写；编辑区按块渲染表格与图片，点哪段改哪段；导入 docx/pdf 保留结构，审核包可携带全部过程，并可在 DSH 里一键安装 WPS 版。",
         "en": "A three-column review workspace: source checks, logic review, expansion, connection analysis, and rewrites, with block-level editing that keeps tables and images rendered, structure-preserving docx/pdf import, and a portable review package."
       },
       "icon": "../icon.svg",
@@ -72,12 +72,12 @@
       },
       "versions": [
         {
-          "version": "1.4.3",
-          "publishTimestamp": 1794583649,
+          "version": "1.0.0",
+          "publishTimestamp": 1794621790,
           "source": {
             "type": "git",
             "url": "https://github.com/lzyxczw-cyber/dsh-review-desk",
-            "commit": "09f5579ffa4faf8d15b1c8891c1381935a675ad3"
+            "commit": "aa693c9c207e3820d5724e9073034efc32ae5f3f"
           }
         }
       ]
