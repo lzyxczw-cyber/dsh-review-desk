@@ -374,10 +374,10 @@ select { color: var(--rd-fg); background: var(--rd-bg); }
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 8px 12px 10px;
-  border-top: 1px solid var(--rd-border);
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--rd-border);
   background: var(--rd-bg-soft);
-  border-radius: 0 0 12px 12px;
+  border-radius: 0;
 }
 .rd-tools button {
   border: 1px solid var(--rd-border);

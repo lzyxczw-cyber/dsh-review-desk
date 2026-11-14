@@ -1008,8 +1008,9 @@
     tools.appendChild(copy)
 
     root.appendChild(head)
-    root.appendChild(body)
+    /* 写回操作放在标题（动作/时间/状态）下方，先于正文 */
     root.appendChild(tools)
+    root.appendChild(body)
     root.hidden = false
     if (refs.detailEmpty) refs.detailEmpty.hidden = true
 
