@@ -780,6 +780,25 @@ await test('marks reviewed ranges with action-coloured underlines', async () => 
   page.dom.window.close()
 })
 
+await test('the history header toggles marks on and off', async () => {
+  const page = await mount()
+  await page.waitFor(() => page.container.querySelector('#conn-dot').getAttribute('data-state') === 'ready', 'health ready')
+  page.actionButton('expand').click()
+  await page.waitFor(() => page.detailState().textContent === '完成', 'expand done')
+  await page.waitFor(() => page.fake.model.underlines.length > 0, 'underline applied', 4000)
+  const button = page.container.querySelector('#btn-toggle-marks')
+  assert.equal(button.textContent, '隐藏划线')
+  button.click()
+  await page.waitFor(() => page.fake.model.underlineStyle === 0, 'marks hidden', 3000)
+  assert.equal(button.textContent, '显示划线')
+  assert.equal(page.window.localStorage.getItem('wps-review-desk.marks.v2'), null)
+  button.click()
+  await page.waitFor(() => page.fake.model.underlineStyle === 1, 'marks shown again', 3000)
+  assert.equal(button.textContent, '隐藏划线')
+  assert.ok(page.window.localStorage.getItem('wps-review-desk.marks.v2'))
+  page.dom.window.close()
+})
+
 async function test(name, fn) {
   try {
     await fn()

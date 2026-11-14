@@ -1927,7 +1927,7 @@
       format: PACKAGE_FORMAT,
       version: PACKAGE_VERSION,
       exportedAt: new Date().toISOString(),
-      app: { plugin: 'review-desk', name: '审悦', build: 'wps-addin-1.1.3' },
+      app: { plugin: 'review-desk', name: '审悦', build: 'wps-addin-1.1.4' },
       document: { title: title, text: documentText },
       runs: state.results.filter(function (result) { return result.status !== 'running' }).map(function (result) {
         return {
@@ -2585,6 +2585,23 @@
     closePopovers()
   }
 
+  function updateMarksButton() {
+    if (!refs.btnToggleMarks) return
+    var visible = state.settings.showMarks !== false
+    refs.btnToggleMarks.textContent = visible ? '隐藏划线' : '显示划线'
+    refs.btnToggleMarks.title = visible ? '隐藏审阅范围划线（还原原文格式）' : '显示审阅范围划线'
+  }
+
+  function toggleMarks() {
+    state.settings.showMarks = state.settings.showMarks === false
+    if (refs.settingMarks) refs.settingMarks.checked = state.settings.showMarks !== false
+    updateMarksButton()
+    persistSettings()
+    applyReviewMarks()
+    updateMarksButton()
+    toast(state.settings.showMarks === false ? '已隐藏划线' : '已显示划线')
+  }
+
   function init() {
     refs = {
       connDot: document.getElementById('conn-dot'),
@@ -2598,6 +2615,7 @@
       filterTabs: document.getElementById('filter-tabs'),
       historyList: document.getElementById('history-list'),
       btnClear: document.getElementById('btn-clear'),
+      btnToggleMarks: document.getElementById('btn-toggle-marks'),
       detail: document.getElementById('detail'),
       detailEmpty: document.getElementById('detail-empty'),
       bridgeUrl: document.getElementById('bridge-url'),
@@ -2650,6 +2668,7 @@
     renderSegmentLengthOptions()
     if (refs.settingSegment) refs.settingSegment.checked = state.settings.autoSegment !== false
     if (refs.settingMarks) refs.settingMarks.checked = state.settings.showMarks !== false
+    updateMarksButton()
 
     if (refs.settingModel) {
       refs.settingModel.addEventListener('change', function () {
@@ -2694,6 +2713,7 @@
       refs.settingMarks.addEventListener('change', function () {
         state.settings.showMarks = refs.settingMarks.checked === true
         persistSettings()
+        updateMarksButton()
         setTimeout(function () { applyReviewMarks() }, 50)
       })
     }
@@ -2730,6 +2750,7 @@
       })
     }
     if (refs.btnClear) refs.btnClear.addEventListener('click', clearHistory)
+    if (refs.btnToggleMarks) refs.btnToggleMarks.addEventListener('click', toggleMarks)
     if (refs.bridgeUrl) {
       refs.bridgeUrl.addEventListener('change', function () {
         state.bridge = normalizeBridge(refs.bridgeUrl.value)
@@ -2796,7 +2817,7 @@
 
     report({
       kind: 'wps-taskpane',
-      version: '1.1.3',
+      version: '1.1.4',
       loaded: true,
       hasApp: !!getApp(),
       docName: state.docName,
